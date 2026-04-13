@@ -1,0 +1,64 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] -----------------< ws.study.springboot:springboot-jni >-----------------
+[INFO] Building springboot-jni 0.0.1-SNAPSHOT
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- clean:3.2.0:clean (default-clean) @ springboot-jni ---
+[INFO] Deleting D:\用户\Code\jiziwai\springboot-jni\target
+[INFO] 
+[INFO] --- frontend:1.15.0:install-node-and-npm (install node and npm) @ springboot-jni ---
+[INFO] Installing node version v22.13.1
+[INFO] Copying node binary from C:\Users\23655\.m2\repository\com\github\eirslett\node\22.13.1\node-22.13.1-win-x64.exe to D:\用户\Code\jiziwai\springboot-jni\target\node\node.exe
+[INFO] Installed node locally.
+[INFO] Installing npm version 10.9.0
+[INFO] Unpacking C:\Users\23655\.m2\repository\com\github\eirslett\npm\10.9.0\npm-10.9.0.tar.gz into D:\用户\Code\jiziwai\springboot-jni\target\node\node_modules
+[INFO] Installed npm locally.
+[INFO] 
+[INFO] --- frontend:1.15.0:npm (npm install) @ springboot-jni ---
+[INFO] Running 'npm install' in D:\用户\Code\jiziwai\frontend
+[INFO] 
+[INFO] up to date, audited 229 packages in 13s
+[INFO] 
+[INFO] 34 packages are looking for funding
+[INFO]   run `npm fund` for details
+[INFO] 
+[INFO] found 0 vulnerabilities
+[INFO] 
+[INFO] --- frontend:1.15.0:npm (npm run build) @ springboot-jni ---
+[INFO] Running 'npm run build' in D:\用户\Code\jiziwai\frontend
+[INFO] 
+[INFO] > frontend@0.0.0 build
+[INFO] > vite build
+[INFO] 
+[INFO] vite v6.4.1 building for production...
+[INFO] transforming...
+[INFO] 鉁? 3049 modules transformed.
+[INFO] rendering chunks...
+[INFO] computing gzip size...
+[INFO] dist/index.html                   0.48 kB 鈹? gzip:   0.31 kB
+[INFO] dist/assets/index-CXXw8XBC.css   13.67 kB 鈹? gzip:   3.20 kB
+[INFO] dist/assets/index-D7djXTJV.js   685.48 kB 鈹? gzip: 221.53 kB
+[INFO] 
+[INFO] (!) Some chunks are larger than 500 kB after minification. Consider:
+[INFO] - Using dynamic import() to code-split the application
+[INFO] - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+[INFO] - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[INFO] 鉁? built in 5.69s
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ springboot-jni ---
+[INFO] Copying 3 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- resources:3.3.1:copy-resources (copy-frontend-build) @ springboot-jni ---
+[INFO] Copying 4 resources from ..\frontend\dist to src\main\resources\static
+[INFO] 
+[INFO] --- compiler:3.8.1:compile (default-compile) @ springboot-jni ---
+[INFO] Changes detected - recompiling the module!
+[INFO] Compiling 7 source files to D:\用户\Code\jiziwai\springboot-jni\target\classes
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  26.005 s
+[INFO] Finished at: 2025-11-26T23:40:28+08:00
+[INFO] ------------------------------------------------------------------------
