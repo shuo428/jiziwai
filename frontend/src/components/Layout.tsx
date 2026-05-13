@@ -14,14 +14,10 @@ const LayoutContent: React.FC = () => {
     const { userInfo, actions } = useUserStore();
     const [collapsed, setCollapsed] = useState(false);
 
-    const handleLogout = () => { 
-        // 1. 先设置退出标记，让ProtectedRoute知道这是主动退出
+    const handleLogout = () => {
         actions.setIsLoggingOut(true);
-        // 2. 清除用户信息和token
         actions.clearUserInfoAndToken();
-        // 3. 导航到登录页
         navigate('/login');
-        // 4. 重置退出标记
         setTimeout(() => {
             actions.setIsLoggingOut(false);
             toast.success('退出登录成功');
@@ -48,7 +44,6 @@ const LayoutContent: React.FC = () => {
             key: '/chat',
             icon: <MessageSquare size={18} />,
             label: <Link to="/chat">AI 助手</Link>,
-            disabled: true,
         },
     ];
 
@@ -86,7 +81,6 @@ const LayoutContent: React.FC = () => {
                 trigger={null}
             >
                 <div className="h-full flex flex-col">
-                    {/* Logo区域 */}
                     <div className="h-16 flex items-center justify-between px-4 border-b border-gray-200">
                         {!collapsed ? (
                             <div className="flex items-center gap-2">
@@ -102,7 +96,6 @@ const LayoutContent: React.FC = () => {
                         )}
                     </div>
 
-                    {/* 菜单区域 */}
                     <div className="flex-1 py-4">
                         <Menu
                             mode="inline"
@@ -113,7 +106,6 @@ const LayoutContent: React.FC = () => {
                         />
                     </div>
 
-                    {/* 折叠按钮 */}
                     <div className="border-t border-gray-200 p-2">
                         <Button
                             type="text"
@@ -126,20 +118,22 @@ const LayoutContent: React.FC = () => {
             </Sider>
 
             <AntLayout>
-                {/* 顶部标题栏 */}
                 <Header className="bg-white border-b border-gray-200 px-6 flex items-center justify-between h-16 shadow-sm">
                     <div>
                         <h1 className="text-lg font-semibold text-slate-800 m-0">
-                            {location.pathname === '/dashboard' ? '仪表盘' : 
-                             location.pathname === '/spectral-data' ? '获取光谱数据' : 
-                             location.pathname === '/spectral-management' ? '光谱数据管理' :
-                             location.pathname === '/profile' ? '个人信息' :
-                             'AI 助手'}
+                            {location.pathname === '/dashboard'
+                                ? '仪表盘'
+                                : location.pathname === '/spectral-data'
+                                  ? '获取光谱数据'
+                                  : location.pathname === '/spectral-management'
+                                    ? '光谱数据管理'
+                                    : location.pathname === '/profile'
+                                      ? '个人信息'
+                                      : 'AI 助手'}
                         </h1>
                         <p className="text-xs text-slate-500 m-0">物理实验数据处理系统</p>
                     </div>
-                    
-                    {/* 用户信息区域 */}
+
                     <Dropdown menu={{ items: userMenuItems }} placement="bottomRight" trigger={['click']}>
                         <Button
                             type="text"
@@ -188,8 +182,8 @@ const Layout: React.FC = () => {
                     },
                     Layout: {
                         siderBg: '#ffffff',
-                    }
-                }
+                    },
+                },
             }}
         >
             <LayoutContent />
