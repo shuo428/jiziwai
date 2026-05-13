@@ -24,38 +24,38 @@ const HomePage = () => {
             status: 'active',
         },
         {
-            icon: <MessageSquare size={20} className="text-slate-400" />,
+            icon: <MessageSquare size={20} className="text-indigo-600" />,
             title: 'AI 助手',
-            description: '与 AI 对话进行数据分析',
+            description: '与 AI 对话并触发光谱数据工具',
             link: '/chat',
-            status: 'coming',
+            status: 'active',
         },
     ];
 
     const stats = [
-        { 
-            label: '接口状态', 
-            value: isRunning ? '监听中' : isCapturing ? '采集中' : '空闲', 
-            icon: <Radio size={16} />, 
-            color: isRunning || isCapturing ? 'green' : 'blue' 
+        {
+            label: '接口状态',
+            value: isRunning ? '监听中' : isCapturing ? '采集中' : '空闲',
+            icon: <Radio size={16} />,
+            color: isRunning || isCapturing ? 'green' : 'blue',
         },
-        { 
-            label: '光谱数据', 
-            value: spectralDataList.length, 
-            icon: <Database size={16} />, 
-            color: 'purple' 
+        {
+            label: '光谱数据',
+            value: spectralDataList.length,
+            icon: <Database size={16} />,
+            color: 'purple',
         },
-        { 
-            label: '采集进度', 
-            value: isCapturing ? `${receivedCount}/${totalCount}` : '-', 
-            icon: <Activity size={16} />, 
-            color: 'orange' 
+        {
+            label: '采集进度',
+            value: isCapturing ? `${receivedCount}/${totalCount}` : '-',
+            icon: <Activity size={16} />,
+            color: 'orange',
         },
-        { 
-            label: '数据大小', 
-            value: `${(spectralDataList.reduce((sum, item) => sum + item.size, 0) / 1024 / 1024).toFixed(2)} MB`, 
-            icon: <Cpu size={16} />, 
-            color: 'cyan' 
+        {
+            label: '数据大小',
+            value: `${(spectralDataList.reduce((sum, item) => sum + item.size, 0) / 1024 / 1024).toFixed(2)} MB`,
+            icon: <Cpu size={16} />,
+            color: 'cyan',
         },
     ];
 
@@ -63,7 +63,6 @@ const HomePage = () => {
 
     return (
         <div className="space-y-6 p-6">
-            {/* Welcome Card */}
             <Card className="bg-gradient-to-r from-blue-500 to-blue-600 border-0 shadow-md">
                 <div className="flex items-center justify-between">
                     <div>
@@ -77,7 +76,6 @@ const HomePage = () => {
                 </div>
             </Card>
 
-            {/* System Stats */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {stats.map((stat, index) => (
                     <Card key={index} className="bg-white border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
@@ -92,18 +90,17 @@ const HomePage = () => {
                 ))}
             </div>
 
-            {/* Quick Actions */}
             <div>
                 <Title level={5} className="!text-slate-800 !mb-3">快捷操作</Title>
                 <div className="grid md:grid-cols-3 gap-4">
                     {quickActions.map((action, index) => (
-                        <Link to={action.link} key={index} className={action.status === 'coming' ? 'pointer-events-none' : ''}>
+                        <Link to={action.link} key={index}>
                             <Card
-                                hoverable={action.status === 'active'}
-                                className={`h-full bg-white border border-gray-200 shadow-sm ${action.status === 'active' ? 'hover:border-blue-400 hover:shadow-md' : 'opacity-60'} transition-all`}
+                                hoverable
+                                className="h-full bg-white border border-gray-200 shadow-sm hover:border-blue-400 hover:shadow-md transition-all"
                             >
                                 <div className="flex items-center gap-4">
-                                    <div className={`w-12 h-12 rounded-lg ${action.status === 'active' ? 'bg-blue-50' : 'bg-slate-50'} flex items-center justify-center flex-shrink-0`}>
+                                    <div className="w-12 h-12 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
                                         {action.icon}
                                     </div>
                                     <div className="flex-1">
@@ -111,15 +108,10 @@ const HomePage = () => {
                                             <Title level={5} className="!mb-0 !text-slate-800">
                                                 {action.title}
                                             </Title>
-                                            {action.status === 'coming' && (
-                                                <Tag color="default" className="text-xs">即将推出</Tag>
-                                            )}
                                         </div>
                                         <Text className="text-slate-600 text-sm">{action.description}</Text>
                                     </div>
-                                    {action.status === 'active' && (
-                                        <ArrowRight size={18} className="text-slate-400 flex-shrink-0" />
-                                    )}
+                                    <ArrowRight size={18} className="text-slate-400 flex-shrink-0" />
                                 </div>
                             </Card>
                         </Link>
@@ -127,7 +119,6 @@ const HomePage = () => {
                 </div>
             </div>
 
-            {/* Recent Spectral Data */}
             <Card className="bg-white border border-gray-200 shadow-sm">
                 <div className="flex items-center justify-between mb-4">
                     <Title level={5} className="!mb-0 !text-slate-800 flex items-center gap-2">
@@ -140,7 +131,7 @@ const HomePage = () => {
                         </Button>
                     </Link>
                 </div>
-                
+
                 {spectralDataList.length === 0 ? (
                     <div className="text-center py-8">
                         <Database size={48} className="text-slate-300 mx-auto mb-3" />
@@ -150,8 +141,8 @@ const HomePage = () => {
                 ) : (
                     <div className="space-y-2">
                         {recentData.map((data) => (
-                            <div 
-                                key={data.id} 
+                            <div
+                                key={data.id}
                                 className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
                             >
                                 <div className="flex items-center gap-3 flex-1">
@@ -176,7 +167,6 @@ const HomePage = () => {
                 )}
             </Card>
 
-            {/* System Status */}
             {(isRunning || isCapturing) && (
                 <Card className="bg-white border border-gray-200 shadow-sm">
                     <div className="flex items-center justify-between mb-4">
@@ -197,10 +187,10 @@ const HomePage = () => {
                                         {receivedCount} / {totalCount} ({Math.round((receivedCount / totalCount) * 100)}%)
                                     </Text>
                                 </div>
-                                <Progress 
-                                    percent={Math.round((receivedCount / totalCount) * 100)} 
-                                    strokeColor="#3b82f6" 
-                                    showInfo={false} 
+                                <Progress
+                                    percent={Math.round((receivedCount / totalCount) * 100)}
+                                    strokeColor="#3b82f6"
+                                    showInfo={false}
                                 />
                             </div>
                         )}

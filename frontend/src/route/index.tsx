@@ -5,6 +5,7 @@ import SpectralDataManagementPage from "../pages/SpectralDataManagement";
 import LoginPage from "../pages/Login";
 import RegisterPage from "../pages/Register";
 import ProfilePage from "../pages/Profile";
+import ChatPage from "../pages/Chat";
 import ProtectedRoute from "../components/ProtectedRoute";
 import Layout from "../components/Layout";
 
@@ -22,7 +23,8 @@ export default function AppRouter() {
                 }
             >
                 <Route index element={<Navigate to="/dashboard" replace />} />
-                <Route path="/dashboard" 
+                <Route
+                    path="/dashboard"
                     element={
                         <ProtectedRoute>
                             <HomePage />
@@ -42,6 +44,14 @@ export default function AppRouter() {
                     element={
                         <ProtectedRoute>
                             <SpectralDataManagementPage />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/chat"
+                    element={
+                        <ProtectedRoute>
+                            <ChatPage />
                         </ProtectedRoute>
                     }
                 />

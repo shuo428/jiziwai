@@ -1,17 +1,15 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { Card, Button, Alert, Typography, Tag, Tabs, InputNumber, Flex } from 'antd';
 import { Radio, Play, AlertCircle, CheckCircle, Activity, Square, Hash } from 'lucide-react';
-import { jniApi } from '../service/jniService';
+import { jniBridgeService } from '../service/jniBridgeService';
 import { toast } from 'sonner';
 import { useJNIStore } from '../store/jniStore';
-import type { SpectralData } from '../store/jniStore';
 
 const { Title, Paragraph, Text } = Typography;
 
 const SpectralDataPage: React.FC = () => {
     const [loading, setLoading] = useState<boolean>(false);
     const [captureCount, setCaptureCount] = useState<number>(10);
-    const wsRef = useRef<WebSocket | null>(null);
     const { 
         isRunning, 
         isCapturing, 
@@ -22,108 +20,17 @@ const SpectralDataPage: React.FC = () => {
         actions 
     } = useJNIStore();
 
-    // WebSocket 连接管理
-    const connectWebSocket = () => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-            console.log('WebSocket 已连接');
-            return;
-        }
-
-        const ws = new WebSocket('ws://localhost:8080/ws');
-        
-        ws.onopen = () => {
-            console.log('WebSocket 连接成功');
-        };
-
-        ws.onmessage = (event) => {
-            console.log('收到 WebSocket 消息:', event.data);
-            
-            try {
-                const state = useJNIStore.getState();
-                // 处理接收到的光谱数据
-                const dataItem: SpectralData = {
-                    id: `spectral_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                    index: state.spectralDataList.length + 1,
-                    data: event.data,
-                    timestamp: new Date().toISOString(),
-                    size: new Blob([event.data]).size
-                };
-                
-                actions.addSpectralData(dataItem);
-                
-                // 如果是指定次数采集模式，更新进度
-                if (state.isCapturing) {
-                    actions.incrementReceivedCount();
-                    const newCount = state.receivedCount + 1;
-                    toast.success(`第 ${newCount} 个光谱数据接收完成`);
-                    
-                    // 检查是否完成
-                    if (newCount >= state.totalCount) {
-                        actions.resetCaptureState();
-                        toast.success('接收结束', {
-                            description: `共接收到 ${state.totalCount} 条光谱数据`
-                        });
-                    }
-                } else if (state.isRunning) {
-                    // 持续监听模式
-                    toast.success(`接收到新的光谱数据 #${state.spectralDataList.length + 1}`);
-                }
-            } catch (err) {
-                console.error('处理 WebSocket 消息失败:', err);
-            }
-        };
-
-        ws.onerror = (error) => {
-            console.error('WebSocket 错误:', error);
-            toast.error('WebSocket 连接错误', {
-                description: '无法连接到服务器'
-            });
-        };
-
-        ws.onclose = () => {
-            console.log('WebSocket 连接已关闭');
-        };
-
-        wsRef.current = ws;
-    };
-
-    const closeWebSocket = () => {
-        if (wsRef.current) {
-            wsRef.current.close();
-            wsRef.current = null;
-        }
-    };
-
-    // 组件卸载时关闭 WebSocket
-    useEffect(() => {
-        return () => {
-            closeWebSocket();
-        };
-    }, []);
-
     const startContinuousListener = async () => {
         setLoading(true);
         actions.setError(null);
         actions.setResult(null);
 
         try {
-            // 先建立 WebSocket 连接
-            connectWebSocket();
-            
-            // 启动 JNI 监听
-            await jniApi.startJNIBridge();
-            
-            actions.setIsRunning(true);
-            actions.setResult({
-                status: 'success',
-                message: '持续监听已启动',
-                data: '正在持续监听光谱数据...'
-            });
+            await jniBridgeService.startContinuousListener();
             toast.success('持续监听已启动', {
                 description: '系统将持续接收光谱数据'
             });
         } catch (err: any) {
-            closeWebSocket();
             actions.setError(err.response?.data?.message || err.message || 'Failed to connect to backend');
             toast.error('启动失败', {
                 description: '无法启动持续监听'
@@ -138,10 +45,7 @@ const SpectralDataPage: React.FC = () => {
         actions.setError(null);
 
         try {
-            await jniApi.stopJNIBridge();
-            closeWebSocket();
-            actions.setIsRunning(false);
-            actions.setResult(null);
+            await jniBridgeService.stopContinuousListener();
             toast.success('持续监听已停止', {
                 description: '系统已停止接收光谱数据'
             });
@@ -165,17 +69,11 @@ const SpectralDataPage: React.FC = () => {
         actions.setError(null);
 
         try {
-            // 先建立 WebSocket 连接
-            connectWebSocket();
-            
-            // 启动指定次数采集
-            await jniApi.captureImages(captureCount);
-            actions.setCapturing(true, captureCount);
+            await jniBridgeService.captureCountBasedSpectralData(captureCount);
             toast.success('指定次数采集已启动', {
-                description: `将采集 ${captureCount} 个光谱数据`
+                description: `已按原有流程接收 ${captureCount} 条光谱数据`
             });
         } catch (err: any) {
-            closeWebSocket();
             actions.setError(err.response?.data?.message || err.message || 'Failed to start capture');
             toast.error('启动失败', {
                 description: '无法启动指定次数采集'
