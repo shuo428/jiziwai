@@ -2,69 +2,84 @@ package springbootjni.controller;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
-
 import springbootjni.dto.ApiResponse;
-import springbootjni.jni.JNIBridge;
-import springbootjni.service.JNICallbackService;
+import springbootjni.dto.jni.BridgeConnectRequest;
+import springbootjni.dto.jni.BridgeFullConfigRequest;
+import springbootjni.dto.jni.BridgeStateResponse;
+import springbootjni.service.JNIService;
 
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/api/jni")
 public class JNIController {
+    private final JNIService jniService;
 
-    private final JNICallbackService jniCallbackService;
-    private JNIBridge bridge;
-
-    @GetMapping("/start")
-    public ApiResponse<String> startJNI() {
+    @GetMapping("/state")
+    public ApiResponse<BridgeStateResponse> getState() {
         try {
-            new Thread(() -> {
-                bridge = new JNIBridge();
-                bridge.setJniCallbackService(jniCallbackService);
-                bridge.startListening();
-            }).start();
-            System.out.println("JNI listener started");
-            return ApiResponse.success("JNI bridge listener started successfully",
-                    "Listener is now running in background");
+            return ApiResponse.success("JNI bridge state fetched successfully", jniService.getState());
         } catch (Exception e) {
-            return ApiResponse.error("Failed to start JNI bridge: " + e.getMessage());
+            return ApiResponse.error("Failed to fetch JNI bridge state: " + e.getMessage());
         }
     }
 
-    @GetMapping("/stop")
-    public ApiResponse<String> stopJNI() {
+    @PostMapping("/connect")
+    public ApiResponse<BridgeStateResponse> connect(@RequestBody BridgeConnectRequest request) {
         try {
-            if (bridge != null) {
-                bridge.stopListening();
-            }
-            System.out.println("JNI listener stopped");
-            return ApiResponse.success("JNI bridge listener stopped successfully");
+            BridgeStateResponse state = jniService.connect(request);
+            return ApiResponse.success("JNI bridge connected successfully", state);
         } catch (Exception e) {
-            return ApiResponse.error("Failed to stop JNI bridge: " + e.getMessage());
+            return ApiResponse.error("Failed to connect JNI bridge: " + e.getMessage());
         }
     }
 
-    @PostMapping("/capture")
-    public ApiResponse<String> captureImages(@RequestParam int count) {
+    @PostMapping("/disconnect")
+    public ApiResponse<BridgeStateResponse> disconnect() {
         try {
-            if (count <= 0 || count > 100) {
-                return ApiResponse.error("Invalid count. Must be between 1 and 100");
-            }
-            
-            new Thread(() -> {
-                JNIBridge captureBridge = new JNIBridge();
-                captureBridge.setJniCallbackService(jniCallbackService);
-                int result = captureBridge.captureImages(count);
-                if (result != 0) {
-                    System.err.println("Failed to capture images, error code: " + result);
-                }
-            }).start();
-            
-            System.out.println("Started capturing " + count + " images");
-            return ApiResponse.success("Image capture started successfully",
-                    "Capturing " + count + " spectral images");
+            BridgeStateResponse state = jniService.disconnect();
+            return ApiResponse.success("JNI bridge disconnected successfully", state);
         } catch (Exception e) {
-            return ApiResponse.error("Failed to start image capture: " + e.getMessage());
+            return ApiResponse.error("Failed to disconnect JNI bridge: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/commands/reset")
+    public ApiResponse<String> sendReset() {
+        try {
+            jniService.sendReset();
+            return ApiResponse.success("Reset command sent successfully");
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to send reset command: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/commands/trigger-once")
+    public ApiResponse<String> sendTriggerOnce() {
+        try {
+            jniService.sendTriggerOnce();
+            return ApiResponse.success("Trigger-once command sent successfully");
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to send trigger-once command: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/commands/query-status")
+    public ApiResponse<String> sendQueryStatus() {
+        try {
+            jniService.sendQueryStatus();
+            return ApiResponse.success("Query-status command sent successfully");
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to send query-status command: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/commands/full-config")
+    public ApiResponse<String> sendFullConfig(@RequestBody BridgeFullConfigRequest request) {
+        try {
+            jniService.sendFullConfig(request == null ? null : request.getConfigBytes());
+            return ApiResponse.success("Full-config command sent successfully");
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to send full-config command: " + e.getMessage());
         }
     }
 }

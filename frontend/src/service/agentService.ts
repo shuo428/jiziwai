@@ -2,14 +2,26 @@ import axios from "axios";
 
 export type AgentIntent =
     | {
-          type: "capture";
-          count: number;
+          type: "connect";
+          host: string;
+          controlPort: number;
+          imagePort: number;
+          verifyCrc?: boolean;
       }
     | {
-          type: "start_continuous_listener";
+          type: "disconnect";
       }
     | {
-          type: "stop_continuous_listener";
+          type: "trigger_once";
+      }
+    | {
+          type: "query_status";
+      }
+    | {
+          type: "reset";
+      }
+    | {
+          type: "send_full_config";
       };
 
 export interface AgentChatResult {

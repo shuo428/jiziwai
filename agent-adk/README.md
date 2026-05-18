@@ -8,10 +8,10 @@
 - `main.py`: 服务启动入口
 - `api/chat_api.py`: HTTP 接口层
 - `services/chat_service.py`: 对话编排服务层
-- `tools/spectral_data_tool.py`: 智能体工具（当前包含 `capture_count_based_spectral_data`、`start_continuous_spectral_listener`、`stop_continuous_spectral_listener`）
+- `tools/spectral_data_tool.py`: 智能体工具（当前包含连接、断开、复位、单帧触发、状态查询和 512 字节配置下发）
 - `agents/agent.py`: ADK 智能体运行时（Agent 初始化、意图解析、回复生成）
 
-说明：当前“采集动作”由前端按原有 `jniApi + WebSocket + jniStore` 流程执行，ADK 负责自然语言理解与对话。
+说明：当前设备控制使用 `SpectraBridgeNative + BridgeListener`，前端负责执行结构化意图并通过 WebSocket 接收回调结果。
 
 ## 1. 安装依赖
 

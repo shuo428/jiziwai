@@ -1,15 +1,21 @@
 from .spectral_data_tool import (
-    capture_count_based_spectral_data,
+    connect_spectra_bridge,
+    disconnect_spectra_bridge,
+    query_bridge_status,
     reset_auth_token,
+    send_full_config,
+    send_reset_command,
     set_auth_token,
-    start_continuous_spectral_listener,
-    stop_continuous_spectral_listener,
+    trigger_single_frame,
 )
 
 __all__ = [
-    "capture_count_based_spectral_data",
+    "connect_spectra_bridge",
+    "disconnect_spectra_bridge",
+    "query_bridge_status",
     "set_auth_token",
     "reset_auth_token",
-    "start_continuous_spectral_listener",
-    "stop_continuous_spectral_listener",
+    "send_full_config",
+    "send_reset_command",
+    "trigger_single_frame",
 ]
