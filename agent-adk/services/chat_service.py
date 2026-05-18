@@ -32,24 +32,39 @@ class ChatService:
             prompt = message.strip()
             if intent:
                 intent_type = intent.get("type")
-                if intent_type == "capture":
-                    count = int(intent.get("count", 1))
+                if intent_type == "connect":
                     prompt = (
-                        f"用户希望采集 {count} 条光谱数据。"
-                        "前端已经按原有流程执行按数量采集。"
-                        "请给出一句简短确认，并提醒在“光谱数据管理”查看结果。"
+                        "用户希望连接 SpectraBridge 设备。"
+                        "前端将使用解析出的 host、controlPort 和 imagePort 建立连接。"
+                        "请给出一句简短确认，并提醒连接成功后才能发送设备命令。"
                     )
-                elif intent_type == "start_continuous_listener":
+                elif intent_type == "disconnect":
                     prompt = (
-                        "用户希望启动持续监听光谱数据。"
-                        "前端已经按原有流程启动持续监听，并会持续把接收到的数据存入原有数据列表。"
-                        "请给出一句简短确认，并提醒用户后续可以要求停止监听。"
+                        "用户希望断开 SpectraBridge 设备连接。"
+                        "前端将执行断开连接。请给出一句简短确认。"
                     )
-                elif intent_type == "stop_continuous_listener":
+                elif intent_type == "trigger_once":
                     prompt = (
-                        "用户希望停止持续监听光谱数据。"
-                        "前端已经按原有流程停止持续监听。"
-                        "请给出一句简短确认，并提醒在“光谱数据管理”查看已接收数据。"
+                        "用户希望获取一帧光谱图像。"
+                        "前端将发送单帧触发命令，图像通过回调显示，历史帧写入 localStorage。"
+                        "请给出一句简短确认。"
+                    )
+                elif intent_type == "query_status":
+                    prompt = (
+                        "用户希望查询 FPGA 状态。"
+                        "前端将发送状态查询命令，并把回调中的原始状态位显示为二进制。"
+                        "请给出一句简短确认。"
+                    )
+                elif intent_type == "reset":
+                    prompt = (
+                        "用户希望发送 FPGA 复位命令。"
+                        "前端将执行复位命令。请给出一句简短确认。"
+                    )
+                elif intent_type == "send_full_config":
+                    prompt = (
+                        "用户希望发送 512 字节完整配置。"
+                        "前端将使用当前页面中维护的 512 个配置字节下发。"
+                        "请给出一句简短确认。"
                     )
 
             reply = await run_agent_reply(prompt, session_id)

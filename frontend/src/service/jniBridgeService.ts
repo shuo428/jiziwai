@@ -1,301 +1,398 @@
 import { jniApi } from "./jniService";
 import { useJNIStore } from "../store/jniStore";
+import type {
+    BridgeConnectionForm,
+    BridgeConnectionState,
+    ConfigAckRecord,
+    ImageFrameRecord,
+    JniEventEnvelope,
+    StatusRecord,
+    TransportErrorRecord,
+} from "../types/jni";
 
-let spectralWebSocket: WebSocket | null = null;
-let connectingPromise: Promise<void> | null = null;
-let captureCompletionPromise: Promise<number> | null = null;
-let captureResolve: ((count: number) => void) | null = null;
-let captureReject: ((error: Error) => void) | null = null;
-let captureTimeoutId: number | null = null;
-
-/**
- * 将单条光谱数据写入原有 `jniStore`。
- *
- * 这样无论入口来自“获取光谱数据”页面还是“AI 助手”页面，
- * 最终都会落到同一个数据存储位置，不会出现功能分叉。
- *
- * @param rawData 单条光谱数据原文
- */
-const appendSpectralRecord = (rawData: string): void => {
-    const state = useJNIStore.getState();
-    state.actions.addSpectralData({
-        id: `spectral_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-        index: state.spectralDataList.length + 1,
-        data: rawData,
-        timestamp: new Date().toISOString(),
-        size: new Blob([rawData]).size,
-    });
+type PendingRequest<T> = {
+    timeoutId: number;
+    resolve: (value: T) => void;
+    reject: (error: Error) => void;
 };
 
-/**
- * 清理“按数量采集”模式的挂起状态。
- *
- * @param error 若存在，表示本轮采集以失败结束
- */
-const finishCountCapture = (error?: Error): void => {
-    const state = useJNIStore.getState();
+let bridgeWebSocket: WebSocket | null = null;
+let websocketPromise: Promise<void> | null = null;
+let pendingFrame: PendingRequest<ImageFrameRecord> | null = null;
+let pendingStatus: PendingRequest<StatusRecord> | null = null;
+let pendingConfigAck: PendingRequest<ConfigAckRecord> | null = null;
 
-    if (captureTimeoutId !== null) {
-        window.clearTimeout(captureTimeoutId);
-        captureTimeoutId = null;
+const buildId = (prefix: string): string => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+const normalizeState = (state: Partial<BridgeConnectionState>): Partial<BridgeConnectionState> => ({
+    host: typeof state.host === "string" ? state.host : "",
+    controlPort: typeof state.controlPort === "number" ? state.controlPort : 0,
+    imagePort: typeof state.imagePort === "number" ? state.imagePort : 0,
+    verifyCrc: typeof state.verifyCrc === "boolean" ? state.verifyCrc : true,
+    connected: Boolean(state.connected),
+    lastError: state.lastError ?? null,
+    message: state.message ?? null,
+    fullConfigSize: typeof state.fullConfigSize === "number" ? state.fullConfigSize : 512,
+});
+
+const getWebSocketUrl = (): string => {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.host}/ws`;
+};
+
+const clearPendingRequest = <T>(pending: PendingRequest<T> | null): void => {
+    if (!pending) {
+        return;
     }
+    window.clearTimeout(pending.timeoutId);
+};
 
-    if (error) {
-        state.actions.resetCaptureState();
-        state.actions.setError(error.message);
-        if (captureReject) {
-            captureReject(error);
-        }
+const rejectPendingRequest = <T>(pending: PendingRequest<T> | null, message: string): null => {
+    if (!pending) {
+        return null;
     }
+    clearPendingRequest(pending);
+    pending.reject(new Error(message));
+    return null;
+};
 
-    captureCompletionPromise = null;
-    captureResolve = null;
-    captureReject = null;
-
-    if (!state.isRunning && spectralWebSocket) {
-        spectralWebSocket.close();
-        spectralWebSocket = null;
+const ensureConnected = (): void => {
+    const { bridgeState } = useJNIStore.getState();
+    if (!bridgeState.connected) {
+        throw new Error("设备尚未连接，请先填写 host、controlPort、imagePort 并建立连接");
     }
 };
 
-/**
- * 处理 WebSocket 推送进来的单条光谱数据。
- *
- * 行为分两类：
- * 1. 持续监听模式：持续写入 `jniStore`
- * 2. 按数量采集模式：写入 `jniStore` 的同时推进采集进度，并在达到目标数量时结束本轮采集
- *
- * @param rawData 单条光谱数据原文
- */
-const handleSpectralMessage = (rawData: string): void => {
-    appendSpectralRecord(rawData);
+const applyConnectionState = (state: Partial<BridgeConnectionState>): void => {
+    const store = useJNIStore.getState();
+    store.actions.hydrateBridgeState(normalizeState(state));
+    if (state.lastError) {
+        store.actions.setError(state.lastError);
+    } else if (state.connected) {
+        store.actions.setError(null);
+    }
+};
 
-    const state = useJNIStore.getState();
-    if (!state.isCapturing) {
+const handleImageFrame = (timestamp: string, payload: any): void => {
+    const frame: ImageFrameRecord = {
+        id: buildId("frame"),
+        timestamp,
+        width: Number(payload?.width ?? 0),
+        height: Number(payload?.height ?? 0),
+        raw8Length: Number(payload?.raw8Length ?? 0),
+        raw16Length: Number(payload?.raw16Length ?? 0),
+        imageDataUrl: typeof payload?.imageDataUrl === "string" ? payload.imageDataUrl : "",
+    };
+
+    useJNIStore.getState().actions.pushImageFrame(frame);
+    if (pendingFrame) {
+        clearPendingRequest(pendingFrame);
+        pendingFrame.resolve(frame);
+        pendingFrame = null;
+    }
+};
+
+const handleStatus = (timestamp: string, payload: any): void => {
+    const status: StatusRecord = {
+        id: buildId("status"),
+        timestamp,
+        statusBits: Number(payload?.statusBits ?? 0),
+        statusBinary: typeof payload?.statusBinary === "string" ? payload.statusBinary : "",
+        errorCode: Number(payload?.errorCode ?? 0),
+    };
+
+    useJNIStore.getState().actions.pushStatus(status);
+    if (pendingStatus) {
+        clearPendingRequest(pendingStatus);
+        pendingStatus.resolve(status);
+        pendingStatus = null;
+    }
+};
+
+const handleConfigAck = (timestamp: string, payload: any): void => {
+    const ack: ConfigAckRecord = {
+        id: buildId("config_ack"),
+        timestamp,
+        resultCode: Number(payload?.resultCode ?? -1),
+        failedAddr: Number(payload?.failedAddr ?? -1),
+    };
+
+    useJNIStore.getState().actions.pushConfigAck(ack);
+    if (pendingConfigAck) {
+        clearPendingRequest(pendingConfigAck);
+        pendingConfigAck.resolve(ack);
+        pendingConfigAck = null;
+    }
+};
+
+const handleTransportError = (timestamp: string, payload: any): void => {
+    const transportError: TransportErrorRecord = {
+        id: buildId("transport_error"),
+        timestamp,
+        channel: typeof payload?.channel === "string" ? payload.channel : "unknown",
+        message: typeof payload?.message === "string" ? payload.message : "未知传输错误",
+    };
+
+    const store = useJNIStore.getState();
+    store.actions.pushTransportError(transportError);
+    store.actions.setError(transportError.message);
+};
+
+const handleEvent = (rawMessage: string): void => {
+    let event: JniEventEnvelope;
+    try {
+        event = JSON.parse(rawMessage) as JniEventEnvelope;
+    } catch {
         return;
     }
 
-    const nextReceivedCount = state.receivedCount + 1;
-    state.actions.incrementReceivedCount();
-
-    if (nextReceivedCount >= state.totalCount) {
-        state.actions.resetCaptureState();
-        if (captureTimeoutId !== null) {
-            window.clearTimeout(captureTimeoutId);
-            captureTimeoutId = null;
-        }
-        if (captureResolve) {
-            captureResolve(nextReceivedCount);
-        }
-        captureCompletionPromise = null;
-        captureResolve = null;
-        captureReject = null;
-
-        if (!useJNIStore.getState().isRunning && spectralWebSocket) {
-            spectralWebSocket.close();
-            spectralWebSocket = null;
-        }
+    const timestamp = typeof event.timestamp === "string" ? event.timestamp : new Date().toISOString();
+    switch (event.type) {
+        case "connection":
+            applyConnectionState((event.payload ?? {}) as Partial<BridgeConnectionState>);
+            return;
+        case "image_frame":
+            handleImageFrame(timestamp, event.payload);
+            return;
+        case "status":
+            handleStatus(timestamp, event.payload);
+            return;
+        case "config_ack":
+            handleConfigAck(timestamp, event.payload);
+            return;
+        case "transport_error":
+            handleTransportError(timestamp, event.payload);
+            return;
+        default:
+            return;
     }
 };
 
-/**
- * 建立并复用光谱 WebSocket 连接。
- *
- * 连接由服务层持有，而不是页面组件持有，目的是避免：
- * - AI 助手页卸载后连接被销毁
- * - “获取光谱数据”页和“AI 助手”页各自维护一套互相割裂的连接逻辑
- *
- * @returns Promise<void> 连接建立成功时 resolve；失败时 reject
- */
-const ensureSpectralWebSocket = async (): Promise<void> => {
-    if (spectralWebSocket?.readyState === WebSocket.OPEN) {
+const ensureWebSocket = async (): Promise<void> => {
+    if (bridgeWebSocket?.readyState === WebSocket.OPEN) {
         return;
     }
 
-    if (connectingPromise) {
-        return connectingPromise;
+    if (websocketPromise) {
+        return websocketPromise;
     }
 
-    connectingPromise = new Promise<void>((resolve, reject) => {
+    websocketPromise = new Promise<void>((resolve, reject) => {
         let settled = false;
-        const ws = new WebSocket("ws://127.0.0.1:8080/ws");
+        const socket = new WebSocket(getWebSocketUrl());
         const timeoutId = window.setTimeout(() => {
             if (settled) {
                 return;
             }
             settled = true;
-            ws.close();
-            connectingPromise = null;
-            reject(new Error("连接光谱数据通道超时"));
+            socket.close();
+            websocketPromise = null;
+            useJNIStore.getState().actions.setWebsocketConnected(false);
+            reject(new Error("连接 WebSocket 超时"));
         }, 10000);
 
-        ws.onopen = () => {
-            if (settled) {
-                return;
-            }
+        socket.onopen = () => {
             settled = true;
             window.clearTimeout(timeoutId);
-            spectralWebSocket = ws;
-            connectingPromise = null;
+            bridgeWebSocket = socket;
+            websocketPromise = null;
+            useJNIStore.getState().actions.setWebsocketConnected(true);
             resolve();
         };
 
-        ws.onmessage = (event) => {
-            if (typeof event.data !== "string") {
-                return;
-            }
-            handleSpectralMessage(event.data);
-        };
-
-        ws.onerror = () => {
-            if (!settled) {
-                settled = true;
-                window.clearTimeout(timeoutId);
-                connectingPromise = null;
-                reject(new Error("光谱数据 WebSocket 连接失败"));
-            }
-
-            if (useJNIStore.getState().isCapturing) {
-                finishCountCapture(new Error("按数量采集过程中 WebSocket 连接失败"));
+        socket.onmessage = (event) => {
+            if (typeof event.data === "string") {
+                handleEvent(event.data);
             }
         };
 
-        ws.onclose = () => {
-            if (spectralWebSocket === ws) {
-                spectralWebSocket = null;
+        socket.onerror = () => {
+            useJNIStore.getState().actions.setWebsocketConnected(false);
+            if (!settled) {
+                settled = true;
+                window.clearTimeout(timeoutId);
+                websocketPromise = null;
+                reject(new Error("WebSocket 连接失败"));
             }
-            connectingPromise = null;
+        };
+
+        socket.onclose = () => {
+            bridgeWebSocket = null;
+            websocketPromise = null;
+            useJNIStore.getState().actions.setWebsocketConnected(false);
+            pendingFrame = rejectPendingRequest(pendingFrame, "图像通道已关闭");
+            pendingStatus = rejectPendingRequest(pendingStatus, "状态通道已关闭");
+            pendingConfigAck = rejectPendingRequest(pendingConfigAck, "配置应答通道已关闭");
 
             if (!settled) {
                 settled = true;
                 window.clearTimeout(timeoutId);
-                reject(new Error("光谱数据 WebSocket 已关闭"));
-            }
-
-            if (useJNIStore.getState().isCapturing) {
-                finishCountCapture(new Error("按数量采集过程中 WebSocket 已关闭"));
+                reject(new Error("WebSocket 连接已关闭"));
             }
         };
     });
 
-    return connectingPromise;
+    return websocketPromise;
 };
 
-/**
- * 启动持续监听。
- *
- * 这是对你原有“开始监听”流程的服务化封装：
- * 1. 保证 WebSocket 已连接
- * 2. 调用现有 `/jni/start`
- * 3. 把运行状态写回 `jniStore`
- *
- * @returns Promise<number> 启动时当前已经累计的光谱数据数量
- */
-const startContinuousListener = async (): Promise<number> => {
-    const state = useJNIStore.getState();
-    if (state.isCapturing) {
-        throw new Error("当前正在按数量采集，无法同时启动持续监听");
-    }
-    if (state.isRunning) {
-        return state.spectralDataList.length;
+const createPendingRequest = <T>(
+    currentPending: PendingRequest<T> | null,
+    assign: (pending: PendingRequest<T> | null) => void,
+    timeoutMs: number,
+    timeoutMessage: string,
+): Promise<T> => {
+    if (currentPending) {
+        throw new Error("已有同类命令正在等待回调结果");
     }
 
-    state.actions.setError(null);
-    await ensureSpectralWebSocket();
+    return new Promise<T>((resolve, reject) => {
+        const timeoutId = window.setTimeout(() => {
+            assign(null);
+            reject(new Error(timeoutMessage));
+        }, timeoutMs);
 
-    try {
-        await jniApi.startJNIBridge();
-        state.actions.setIsRunning(true);
-        state.actions.setResult({
-            status: "success",
-            message: "持续监听已启动",
-            data: "系统正在持续接收光谱数据",
+        assign({
+            timeoutId,
+            resolve,
+            reject,
         });
-        return useJNIStore.getState().spectralDataList.length;
-    } catch (error) {
-        if (!useJNIStore.getState().isCapturing && spectralWebSocket) {
-            spectralWebSocket.close();
-            spectralWebSocket = null;
-        }
-        throw error;
-    }
-};
-
-/**
- * 停止持续监听。
- *
- * 这是对你原有“停止监听”流程的服务化封装：
- * 1. 调用现有 `/jni/stop`
- * 2. 更新 `jniStore` 中的运行状态
- * 3. 如果当前没有按数量采集任务在运行，则关闭共享 WebSocket
- *
- * @returns Promise<number> 停止时累计已保存的光谱数据数量
- */
-const stopContinuousListener = async (): Promise<number> => {
-    const state = useJNIStore.getState();
-    if (!state.isRunning) {
-        return state.spectralDataList.length;
-    }
-
-    state.actions.setError(null);
-    await jniApi.stopJNIBridge();
-    state.actions.setIsRunning(false);
-    state.actions.setResult(null);
-
-    if (!useJNIStore.getState().isCapturing && spectralWebSocket) {
-        spectralWebSocket.close();
-        spectralWebSocket = null;
-    }
-
-    return useJNIStore.getState().spectralDataList.length;
-};
-
-/**
- * 按指定数量采集光谱数据。
- *
- * 这是对你原有“按数量采集”流程的服务化封装：
- * 1. 保证 WebSocket 已连接
- * 2. 调用现有 `/jni/capture`
- * 3. 通过共享 WebSocket 接收数据并写入 `jniStore`
- * 4. 达到指定数量后自动结束本轮采集
- *
- * @param count 期望采集的数据条数
- * @returns Promise<number> 本轮实际接收到的光谱数据数量
- */
-const captureCountBasedSpectralData = async (count: number): Promise<number> => {
-    const state = useJNIStore.getState();
-    if (state.isRunning) {
-        throw new Error("当前正在持续监听，请先停止监听后再进行按数量采集");
-    }
-    if (state.isCapturing) {
-        throw new Error("当前已有按数量采集任务在执行");
-    }
-
-    const safeCount = Math.max(1, Math.min(count, 10));
-    state.actions.setError(null);
-    await ensureSpectralWebSocket();
-    state.actions.setCapturing(true, safeCount);
-
-    captureCompletionPromise = new Promise<number>((resolve, reject) => {
-        captureResolve = resolve;
-        captureReject = reject;
-        captureTimeoutId = window.setTimeout(() => {
-            finishCountCapture(new Error("等待光谱数据超时"));
-        }, 20000);
     });
+};
+
+const initialize = async (): Promise<BridgeConnectionState> => {
+    await ensureWebSocket();
+    const state = await jniApi.getState();
+    applyConnectionState(state);
+    return state;
+};
+
+const connect = async (override?: Partial<BridgeConnectionForm>): Promise<BridgeConnectionState> => {
+    await ensureWebSocket();
+
+    const store = useJNIStore.getState();
+    const payload: BridgeConnectionForm = {
+        ...store.connectionForm,
+        ...override,
+    };
+
+    if (!payload.host.trim()) {
+        throw new Error("host 不能为空");
+    }
+    if (payload.controlPort < 1 || payload.controlPort > 65535) {
+        throw new Error("controlPort 必须在 1 到 65535 之间");
+    }
+    if (payload.imagePort < 1 || payload.imagePort > 65535) {
+        throw new Error("imagePort 必须在 1 到 65535 之间");
+    }
+
+    const state = await jniApi.connect(payload);
+    applyConnectionState(state);
+    store.actions.setError(null);
+    return state;
+};
+
+const disconnect = async (): Promise<BridgeConnectionState> => {
+    await ensureWebSocket();
+    const state = await jniApi.disconnect();
+    applyConnectionState(state);
+    pendingFrame = rejectPendingRequest(pendingFrame, "设备已断开连接");
+    pendingStatus = rejectPendingRequest(pendingStatus, "设备已断开连接");
+    pendingConfigAck = rejectPendingRequest(pendingConfigAck, "设备已断开连接");
+    return state;
+};
+
+const sendReset = async (): Promise<void> => {
+    ensureConnected();
+    await ensureWebSocket();
+    await jniApi.sendReset();
+};
+
+const triggerOnceAndWaitForFrame = async (timeoutMs = 15000): Promise<ImageFrameRecord> => {
+    ensureConnected();
+    await ensureWebSocket();
+    const waitForFrame = createPendingRequest(
+        pendingFrame,
+        (value) => {
+            pendingFrame = value;
+        },
+        timeoutMs,
+        "等待图像帧超时",
+    );
 
     try {
-        await jniApi.captureImages(safeCount);
+        await jniApi.sendTriggerOnce();
     } catch (error) {
-        finishCountCapture(error instanceof Error ? error : new Error("启动按数量采集失败"));
+        pendingFrame = rejectPendingRequest(
+            pendingFrame,
+            error instanceof Error ? error.message : "发送单次触发命令失败",
+        );
         throw error;
     }
 
-    return captureCompletionPromise;
+    return waitForFrame;
+};
+
+const queryStatusAndWait = async (timeoutMs = 10000): Promise<StatusRecord> => {
+    ensureConnected();
+    await ensureWebSocket();
+    const waitForStatus = createPendingRequest(
+        pendingStatus,
+        (value) => {
+            pendingStatus = value;
+        },
+        timeoutMs,
+        "等待状态回调超时",
+    );
+
+    try {
+        await jniApi.sendQueryStatus();
+    } catch (error) {
+        pendingStatus = rejectPendingRequest(
+            pendingStatus,
+            error instanceof Error ? error.message : "发送状态查询命令失败",
+        );
+        throw error;
+    }
+
+    return waitForStatus;
+};
+
+const sendFullConfigAndWait = async (configBytes: number[], timeoutMs = 10000): Promise<ConfigAckRecord> => {
+    ensureConnected();
+    await ensureWebSocket();
+
+    if (configBytes.length !== 512) {
+        throw new Error("完整配置必须包含 512 个字节");
+    }
+
+    const waitForAck = createPendingRequest(
+        pendingConfigAck,
+        (value) => {
+            pendingConfigAck = value;
+        },
+        timeoutMs,
+        "等待配置应答超时",
+    );
+
+    try {
+        await jniApi.sendFullConfig(configBytes);
+    } catch (error) {
+        pendingConfigAck = rejectPendingRequest(
+            pendingConfigAck,
+            error instanceof Error ? error.message : "发送完整配置失败",
+        );
+        throw error;
+    }
+
+    return waitForAck;
 };
 
 export const jniBridgeService = {
-    startContinuousListener,
-    stopContinuousListener,
-    captureCountBasedSpectralData,
+    initialize,
+    connect,
+    disconnect,
+    sendReset,
+    triggerOnceAndWaitForFrame,
+    queryStatusAndWait,
+    sendFullConfigAndWait,
 };

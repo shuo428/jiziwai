@@ -78,7 +78,7 @@ public class WebSocketHandler extends TextWebSocketHandler{
                 try {
                     session.sendMessage(new TextMessage(msg));
                 } catch (IOException e) {
-                    e.printStackTrace();
+                    sessions.remove(session);
                 }
             }
         }

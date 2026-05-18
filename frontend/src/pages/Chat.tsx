@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { agentApi } from "../service/agentService";
 import { jniBridgeService } from "../service/jniBridgeService";
+import { useJNIStore } from "../store/jniStore";
 import { useUserStore } from "../store/userStore";
 
 const { Title, Text } = Typography;
@@ -28,19 +29,19 @@ interface ExamplePrompt {
 
 const EXAMPLE_PROMPTS: ExamplePrompt[] = [
     {
-        title: "按数量采集",
-        description: "适合快速验证一次完整采集链路",
-        prompt: "帮我获取 2 条光谱数据，并告诉我数据会保存到哪里。",
+        title: "连接设备",
+        description: "从对话中提取 host 和两个端口",
+        prompt: "连接设备 host 192.168.1.10，controlPort 9000，imagePort 9001。",
     },
     {
-        title: "开始持续监听",
-        description: "启动后持续接收，直到你再次要求停止",
-        prompt: "开始持续监听光谱数据，并提醒我之后如何停止。",
+        title: "获取一帧",
+        description: "连接后触发一次图像采集",
+        prompt: "获取一帧图片，并告诉我历史图片保存在哪里。",
     },
     {
-        title: "停止持续监听",
-        description: "结束当前监听并汇总已保存的数据",
-        prompt: "停止持续监听，并告诉我当前累计保存了多少条光谱数据。",
+        title: "查询状态",
+        description: "读取原始状态位",
+        prompt: "查询一次 FPGA 状态，把状态位按二进制显示。",
     },
 ];
 
@@ -147,6 +148,7 @@ const ChatPage: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [sessionId, setSessionId] = useState<string | null>(null);
     const token = useUserStore((state) => state.token);
+    const configBytes = useJNIStore((state) => state.configBytes);
     const listRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
@@ -184,42 +186,64 @@ const ChatPage: React.FC = () => {
             setSessionId(result.sessionId);
             pushMessage("assistant", result.reply);
 
-            if (result.intent?.type === "capture") {
-                const requested = result.intent.count;
-                const actual = await jniBridgeService.captureCountBasedSpectralData(requested);
+            if (result.intent?.type === "connect") {
+                const state = await jniBridgeService.connect({
+                    host: result.intent.host,
+                    controlPort: result.intent.controlPort,
+                    imagePort: result.intent.imagePort,
+                    verifyCrc: result.intent.verifyCrc ?? true,
+                });
                 pushMessage(
                     "assistant",
                     [
-                        "### 已完成按数量采集",
+                        "### 连接完成",
                         "",
-                        `- 请求条数：**${requested}**`,
-                        `- 实际接收：**${actual}**`,
-                        "- 数据去向：已写入 **光谱数据管理**",
+                        `- Host：\`${state.host}\``,
+                        `- Control Port：\`${state.controlPort}\``,
+                        `- Image Port：\`${state.imagePort}\``,
                     ].join("\n"),
                 );
-            } else if (result.intent?.type === "start_continuous_listener") {
-                const existingCount = await jniBridgeService.startContinuousListener();
+            } else if (result.intent?.type === "disconnect") {
+                await jniBridgeService.disconnect();
+                pushMessage(
+                    "assistant",
+                    ["### 已断开连接", "", "- 当前状态：**未连接**"].join("\n"),
+                );
+            } else if (result.intent?.type === "trigger_once") {
+                const frame = await jniBridgeService.triggerOnceAndWaitForFrame();
                 pushMessage(
                     "assistant",
                     [
-                        "### 已启动持续监听",
+                        "### 已获取一帧图片",
                         "",
-                        "- 当前状态：**监听中**",
-                        `- 当前累计：**${existingCount}** 条`,
-                        "- 数据去向：后续接收到的光谱数据会持续写入 **光谱数据管理**",
-                        "- 下一步：如需停止，可直接输入 `停止持续监听`",
+                        `- 尺寸：**${frame.width} x ${frame.height}**`,
+                        "- 当前图片已显示在 **光谱桥接控制** 页面",
+                        "- 历史图片已缓存到 **localStorage**",
                     ].join("\n"),
                 );
-            } else if (result.intent?.type === "stop_continuous_listener") {
-                const totalCount = await jniBridgeService.stopContinuousListener();
+            } else if (result.intent?.type === "query_status") {
+                const status = await jniBridgeService.queryStatusAndWait();
                 pushMessage(
                     "assistant",
                     [
-                        "### 已停止持续监听",
+                        "### 状态查询完成",
                         "",
-                        "- 当前状态：**已停止**",
-                        `- 累计保存：**${totalCount}** 条`,
-                        "- 查看位置：可在 **光谱数据管理** 页面继续查看和后续处理",
+                        `- 状态位：\`${status.statusBinary}\``,
+                        `- errorCode：\`${status.errorCode}\``,
+                    ].join("\n"),
+                );
+            } else if (result.intent?.type === "reset") {
+                await jniBridgeService.sendReset();
+                pushMessage("assistant", ["### 复位命令已发送", "", "- 请等待设备侧回调或状态变化"].join("\n"));
+            } else if (result.intent?.type === "send_full_config") {
+                const ack = await jniBridgeService.sendFullConfigAndWait(configBytes);
+                pushMessage(
+                    "assistant",
+                    [
+                        "### 完整配置已发送",
+                        "",
+                        `- resultCode：\`${ack.resultCode}\``,
+                        `- failedAddr：\`${ack.failedAddr}\``,
                     ].join("\n"),
                 );
             }
@@ -356,11 +380,11 @@ const ChatPage: React.FC = () => {
                 </div>
 
                 <div className="mt-4 flex gap-3">
-                    <Input.TextArea
+                            <Input.TextArea
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         autoSize={{ minRows: 2, maxRows: 4 }}
-                        placeholder="输入你的问题，例如：帮我获取 2 条光谱数据，或开始持续监听光谱数据"
+                        placeholder="输入你的问题，例如：连接设备 host 192.168.1.10 controlPort 9000 imagePort 9001，或获取一帧图片"
                         onPressEnter={(e) => {
                             if (!e.shiftKey) {
                                 e.preventDefault();

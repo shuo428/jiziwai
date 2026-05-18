@@ -1,109 +1,158 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { createJSONStorage } from "zustand/middleware";
-
-interface JNIBridgeResult {
-    status: string;
-    message: string;
-    data: string;
-}
-
-export interface SpectralData {
-    id: string;
-    index: number;
-    data: string;
-    timestamp: string;
-    size: number;
-}
+import type {
+    BridgeConnectionForm,
+    BridgeConnectionState,
+    ConfigAckRecord,
+    ImageFrameRecord,
+    StatusRecord,
+    TransportErrorRecord,
+} from "../types/jni";
 
 type JNIStore = {
-    isRunning: boolean;
-    result: JNIBridgeResult | null;
+    connectionForm: BridgeConnectionForm;
+    bridgeState: BridgeConnectionState;
+    websocketConnected: boolean;
     error: string | null;
-    spectralDataList: SpectralData[];
-    receivedCount: number;
-    totalCount: number;
-    isCapturing: boolean;
+    currentImage: ImageFrameRecord | null;
+    imageHistory: ImageFrameRecord[];
+    latestStatus: StatusRecord | null;
+    statusHistory: StatusRecord[];
+    latestConfigAck: ConfigAckRecord | null;
+    transportErrors: TransportErrorRecord[];
+    configBytes: number[];
     actions: {
-        setIsRunning: (isRunning: boolean) => void;
-        setResult: (result: JNIBridgeResult | null) => void;
+        setConnectionField: <K extends keyof BridgeConnectionForm>(field: K, value: BridgeConnectionForm[K]) => void;
+        hydrateBridgeState: (state: Partial<BridgeConnectionState>) => void;
+        setWebsocketConnected: (connected: boolean) => void;
         setError: (error: string | null) => void;
-        clearState: () => void;
-        addSpectralData: (data: SpectralData) => void;
-        removeSpectralData: (id: string) => void;
-        clearSpectralData: () => void;
-        setCapturing: (isCapturing: boolean, totalCount?: number) => void;
-        incrementReceivedCount: () => void;
-        resetCaptureState: () => void;
-    }
-}
+        pushImageFrame: (frame: ImageFrameRecord) => void;
+        removeImageFrame: (id: string) => void;
+        clearImageHistory: () => void;
+        pushStatus: (status: StatusRecord) => void;
+        pushConfigAck: (ack: ConfigAckRecord) => void;
+        pushTransportError: (error: TransportErrorRecord) => void;
+        setConfigByte: (index: number, value: number) => void;
+        replaceConfigBytes: (values: number[]) => void;
+        resetConfigBytes: () => void;
+    };
+};
+
+const DEFAULT_CONFIG_BYTES = Array.from({ length: 512 }, () => 0);
+
+const DEFAULT_CONNECTION_FORM: BridgeConnectionForm = {
+    host: "",
+    controlPort: 0,
+    imagePort: 0,
+    verifyCrc: true,
+};
+
+const DEFAULT_BRIDGE_STATE: BridgeConnectionState = {
+    ...DEFAULT_CONNECTION_FORM,
+    connected: false,
+    lastError: null,
+    message: null,
+    fullConfigSize: 512,
+};
 
 export const useJNIStore = create<JNIStore>()(
     persist(
         (set) => ({
-            isRunning: false,
-            result: null,
+            connectionForm: DEFAULT_CONNECTION_FORM,
+            bridgeState: DEFAULT_BRIDGE_STATE,
+            websocketConnected: false,
             error: null,
-            spectralDataList: [],
-            receivedCount: 0,
-            totalCount: 0,
-            isCapturing: false,
+            currentImage: null,
+            imageHistory: [],
+            latestStatus: null,
+            statusHistory: [],
+            latestConfigAck: null,
+            transportErrors: [],
+            configBytes: DEFAULT_CONFIG_BYTES,
 
             actions: {
-                setIsRunning: (isRunning: boolean) => {
-                    set({ isRunning });
+                setConnectionField: (field, value) => {
+                    set((state) => ({
+                        connectionForm: {
+                            ...state.connectionForm,
+                            [field]: value,
+                        },
+                    }));
                 },
-                setResult: (result: JNIBridgeResult | null) => {
-                    set({ result });
+                hydrateBridgeState: (incomingState) => {
+                    set((state) => ({
+                        bridgeState: {
+                            ...state.bridgeState,
+                            ...incomingState,
+                        },
+                        connectionForm: {
+                            host: incomingState.host ?? state.connectionForm.host,
+                            controlPort: incomingState.controlPort ?? state.connectionForm.controlPort,
+                            imagePort: incomingState.imagePort ?? state.connectionForm.imagePort,
+                            verifyCrc: incomingState.verifyCrc ?? state.connectionForm.verifyCrc,
+                        },
+                    }));
                 },
+                setWebsocketConnected: (connected) => set({ websocketConnected: connected }),
                 setError: (error: string | null) => {
                     set({ error });
                 },
-                clearState: () => {
-                    set({ isRunning: false, result: null, error: null });
-                },
-                addSpectralData: (data: SpectralData) => {
+                pushImageFrame: (frame) => {
                     set((state) => ({
-                        spectralDataList: [...state.spectralDataList, data]
+                        currentImage: frame,
+                        imageHistory: [frame, ...state.imageHistory.filter((item) => item.id !== frame.id)].slice(0, 50),
                     }));
                 },
-                removeSpectralData: (id: string) => {
+                removeImageFrame: (id) => {
                     set((state) => ({
-                        spectralDataList: state.spectralDataList.filter(item => item.id !== id)
+                        currentImage: state.currentImage?.id === id ? null : state.currentImage,
+                        imageHistory: state.imageHistory.filter((item) => item.id !== id),
                     }));
                 },
-                clearSpectralData: () => {
-                    set({ spectralDataList: [] });
+                clearImageHistory: () => {
+                    set({ currentImage: null, imageHistory: [] });
                 },
-                setCapturing: (isCapturing: boolean, totalCount?: number) => {
-                    set({ 
-                        isCapturing, 
-                        totalCount: totalCount || 0,
-                        receivedCount: 0 
+                pushStatus: (status) => {
+                    set((state) => ({
+                        latestStatus: status,
+                        statusHistory: [status, ...state.statusHistory.filter((item) => item.id !== status.id)].slice(0, 50),
+                    }));
+                },
+                pushConfigAck: (ack) => {
+                    set({ latestConfigAck: ack });
+                },
+                pushTransportError: (transportError) => {
+                    set((state) => ({
+                        transportErrors: [transportError, ...state.transportErrors].slice(0, 50),
+                    }));
+                },
+                setConfigByte: (index, value) => {
+                    set((state) => {
+                        const nextConfigBytes = [...state.configBytes];
+                        nextConfigBytes[index] = Math.max(0, Math.min(255, Math.trunc(value)));
+                        return { configBytes: nextConfigBytes };
                     });
                 },
-                incrementReceivedCount: () => {
-                    set((state) => ({
-                        receivedCount: state.receivedCount + 1
-                    }));
-                },
-                resetCaptureState: () => {
-                    set({ 
-                        isCapturing: false, 
-                        receivedCount: 0, 
-                        totalCount: 0 
+                replaceConfigBytes: (values) => {
+                    const normalized = Array.from({ length: DEFAULT_CONFIG_BYTES.length }, (_, index) => {
+                        const value = values[index] ?? 0;
+                        return Math.max(0, Math.min(255, Math.trunc(value)));
                     });
+                    set({ configBytes: normalized });
                 },
-            }
+                resetConfigBytes: () => {
+                    set({ configBytes: [...DEFAULT_CONFIG_BYTES] });
+                },
+            },
         }),
         {
             name: "jni-store",
             storage: createJSONStorage(() => localStorage),
             partialize: (state) => ({
-                isRunning: state.isRunning,
-                result: state.result,
-                error: state.error,
-                spectralDataList: state.spectralDataList,
+                connectionForm: state.connectionForm,
+                imageHistory: state.imageHistory,
+                configBytes: state.configBytes,
             }),
         }
     )

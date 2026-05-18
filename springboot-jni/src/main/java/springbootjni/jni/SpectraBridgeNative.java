@@ -1,5 +1,9 @@
 package springbootjni.jni;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
 import java.util.Objects;
 
 /**
@@ -36,7 +40,7 @@ public final class SpectraBridgeNative implements AutoCloseable {
     public static final int FULL_CONFIG_SIZE = 512;
 
     static {
-        System.loadLibrary(DEFAULT_LIBRARY_NAME);
+        loadNativeLibrary();
     }
 
     private final Object stateLock = new Object();
@@ -175,6 +179,30 @@ public final class SpectraBridgeNative implements AutoCloseable {
         }
     }
 
+    private static void loadNativeLibrary() {
+        try {
+            System.loadLibrary(DEFAULT_LIBRARY_NAME);
+            return;
+        } catch (UnsatisfiedLinkError ignored) {
+            // Fallback to packaged resource loading below.
+        }
+
+        String mappedLibraryName = System.mapLibraryName(DEFAULT_LIBRARY_NAME);
+        try (InputStream inputStream = SpectraBridgeNative.class.getResourceAsStream("/" + mappedLibraryName)) {
+            if (inputStream == null) {
+                throw new IllegalStateException("Native library not found in resources: " + mappedLibraryName);
+            }
+
+            String suffix = mappedLibraryName.substring(mappedLibraryName.lastIndexOf('.'));
+            File tempFile = File.createTempFile(DEFAULT_LIBRARY_NAME, suffix);
+            tempFile.deleteOnExit();
+            Files.copy(inputStream, tempFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            System.load(tempFile.getAbsolutePath());
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to load native library: " + mappedLibraryName, ex);
+        }
+    }
+
     /**
      * 创建 C++ 侧 NativeContext，并返回其地址转成的 long handle。
      */
@@ -220,4 +248,3 @@ public final class SpectraBridgeNative implements AutoCloseable {
      */
     private static native void nativeSendFullConfig(long nativeHandle, byte[] regs512);
 }
-
