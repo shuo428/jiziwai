@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Form, Input, Button, Card, Typography } from 'antd';
 import { User, Lock, LogIn, Cpu } from 'lucide-react';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -7,6 +7,14 @@ import { toast } from 'sonner';
 import { useUserStore } from '../store/userStore';
 
 const { Title, Text } = Typography;
+const AUTH_REDIRECT_MESSAGE_KEY = "auth-redirect-message";
+
+const normalizeRedirectPath = (value: string | null | undefined): string | null => {
+    if (!value || !value.startsWith("/") || value.startsWith("//") || value.startsWith("/login")) {
+        return null;
+    }
+    return value;
+};
 
 const Login: React.FC = () => {
     const [loading, setLoading] = useState(false);
@@ -15,7 +23,28 @@ const Login: React.FC = () => {
     const { actions } = useUserStore();
 
     // 获取从哪个页面跳转过来的，登录后跳回去
-    const from = (location.state as any)?.from?.pathname || '/';
+    const from = useMemo(() => {
+        const redirect = normalizeRedirectPath(new URLSearchParams(location.search).get("redirect"));
+        if (redirect) {
+            return redirect;
+        }
+
+        const stateLocation = (location.state as any)?.from;
+        const statePath = stateLocation
+            ? `${stateLocation.pathname || ""}${stateLocation.search || ""}${stateLocation.hash || ""}`
+            : null;
+        return normalizeRedirectPath(statePath) || "/";
+    }, [location.search, location.state]);
+
+    useEffect(() => {
+        const message = window.sessionStorage.getItem(AUTH_REDIRECT_MESSAGE_KEY);
+        if (!message) {
+            return;
+        }
+
+        window.sessionStorage.removeItem(AUTH_REDIRECT_MESSAGE_KEY);
+        toast.warning(message);
+    }, []);
 
     const onFinish = async (values: any) => {
         setLoading(true);
