@@ -1,14 +1,23 @@
+import { useEffect } from "react";
 import { Button, Card, Tag, Typography } from "antd";
 import { Link } from "react-router-dom";
 import { Activity, ArrowRight, Camera, Cpu, Database, MessageSquare, Plug } from "lucide-react";
 
 import { useJNIStore } from "../store/jniStore";
+import { jniBridgeService } from "../service/jniBridgeService";
 
 const { Title, Text } = Typography;
 
 const HomePage = () => {
     const { bridgeState, imageHistory, latestStatus, latestConfigAck } = useJNIStore();
     const recentFrames = imageHistory.slice(0, 5);
+
+    // 首页可能是登录后的首个页面，因此直接从数据库加载最近图片。
+    useEffect(() => {
+        jniBridgeService.loadImageHistory().catch(() => {
+            // 网络和鉴权错误由统一Axios拦截器提示，这里避免重复弹窗。
+        });
+    }, []);
 
     const stats = [
         {
@@ -47,7 +56,7 @@ const HomePage = () => {
         {
             icon: <Database size={20} className="text-green-600" />,
             title: "图像历史管理",
-            description: "查看 localStorage 中缓存的历史图像帧",
+            description: "查看PostgreSQL和服务器中保存的历史图像帧",
             link: "/spectral-management",
         },
         {

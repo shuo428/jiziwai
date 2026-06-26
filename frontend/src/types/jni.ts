@@ -13,13 +13,24 @@ export interface BridgeConnectionState extends BridgeConnectionForm {
 }
 
 export interface ImageFrameRecord {
-    id: string;
+    id: number;
+    captureId: number;
+    requestId: string;
     timestamp: string;
     width: number;
     height: number;
     raw8Length: number;
     raw16Length: number;
+    payloadLength: number;
+    pixelFormat: string;
     imageDataUrl: string;
+    integrityPassed: boolean | null;
+    integrityResultCode: string | null;
+}
+
+export interface TriggerCaptureResponse {
+    captureId: number;
+    requestId: string;
 }
 
 export interface StatusRecord {

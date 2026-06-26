@@ -2,6 +2,8 @@ package springbootjni.service;
 
 import springbootjni.dto.jni.BridgeConnectRequest;
 import springbootjni.dto.jni.BridgeStateResponse;
+import springbootjni.dto.jni.ImageFrameResponse;
+import springbootjni.dto.jni.TriggerCaptureResponse;
 
 import java.util.List;
 
@@ -14,7 +16,7 @@ public interface JNIService {
 
     void sendReset();
 
-    void sendTriggerOnce();
+    TriggerCaptureResponse sendTriggerOnce(Long userId);
 
     void sendQueryStatus();
 
@@ -27,4 +29,10 @@ public interface JNIService {
     void handleConfigAck(int resultCode, int failedAddr);
 
     void handleTransportError(String channel, String message);
+
+    List<ImageFrameResponse> listImages(Long userId);
+
+    boolean deleteImage(Long userId, long imageId);
+
+    int clearImages(Long userId);
 }

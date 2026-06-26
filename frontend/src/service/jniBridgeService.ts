@@ -75,13 +75,20 @@ const applyConnectionState = (state: Partial<BridgeConnectionState>): void => {
 
 const handleImageFrame = (timestamp: string, payload: any): void => {
     const frame: ImageFrameRecord = {
-        id: buildId("frame"),
-        timestamp,
+        id: Number(payload?.id ?? 0),
+        captureId: Number(payload?.captureId ?? 0),
+        requestId: typeof payload?.requestId === "string" ? payload.requestId : "",
+        timestamp: typeof payload?.timestamp === "string" ? payload.timestamp : timestamp,
         width: Number(payload?.width ?? 0),
         height: Number(payload?.height ?? 0),
         raw8Length: Number(payload?.raw8Length ?? 0),
         raw16Length: Number(payload?.raw16Length ?? 0),
+        payloadLength: Number(payload?.payloadLength ?? 0),
+        pixelFormat: typeof payload?.pixelFormat === "string" ? payload.pixelFormat : "RAW16_LOW12",
         imageDataUrl: typeof payload?.imageDataUrl === "string" ? payload.imageDataUrl : "",
+        integrityPassed: typeof payload?.integrityPassed === "boolean" ? payload.integrityPassed : null,
+        integrityResultCode:
+            typeof payload?.integrityResultCode === "string" ? payload.integrityResultCode : null,
     };
 
     useJNIStore.getState().actions.pushImageFrame(frame);
@@ -90,6 +97,17 @@ const handleImageFrame = (timestamp: string, payload: any): void => {
         pendingFrame.resolve(frame);
         pendingFrame = null;
     }
+};
+
+/**
+ * 后端会在FPGA错误、native完整性失败或服务器等待超时时发送capture_failed。
+ * 这里立即结束“等待一帧”的Promise，不再让浏览器自己的定时器成为唯一失败来源。
+ */
+const handleCaptureFailed = (payload: any): void => {
+    const code = typeof payload?.code === "string" ? payload.code : "CAPTURE_FAILED";
+    const message = typeof payload?.message === "string" ? payload.message : "图像采集失败";
+    pendingFrame = rejectPendingRequest(pendingFrame, `${message} (${code})`);
+    useJNIStore.getState().actions.setError(`${message} (${code})`);
 };
 
 const handleStatus = (timestamp: string, payload: any): void => {
@@ -162,6 +180,9 @@ const handleEvent = (rawMessage: string): void => {
             return;
         case "transport_error":
             handleTransportError(timestamp, event.payload);
+            return;
+        case "capture_failed":
+            handleCaptureFailed(event.payload);
             return;
         default:
             return;
@@ -261,9 +282,35 @@ const createPendingRequest = <T>(
 
 const initialize = async (): Promise<BridgeConnectionState> => {
     await ensureWebSocket();
-    const state = await jniApi.getState();
+    const [state, frames] = await Promise.all([
+        jniApi.getState(),
+        jniApi.listImages(),
+    ]);
     applyConnectionState(state);
+    useJNIStore.getState().actions.replaceImageHistory(frames);
     return state;
+};
+
+/**
+ * 独立加载数据库历史，不要求设备已连接，也不依赖WebSocket。
+ * 首页和历史管理页刷新时会调用它。
+ */
+const loadImageHistory = async (): Promise<ImageFrameRecord[]> => {
+    const frames = await jniApi.listImages();
+    useJNIStore.getState().actions.replaceImageHistory(frames);
+    return frames;
+};
+
+const deleteImage = async (imageId: number): Promise<void> => {
+    const deleted = await jniApi.deleteImage(imageId);
+    if (deleted) {
+        useJNIStore.getState().actions.removeImageFrame(imageId);
+    }
+};
+
+const clearImages = async (): Promise<void> => {
+    await jniApi.clearImages();
+    useJNIStore.getState().actions.clearImageHistory();
 };
 
 const connect = async (override?: Partial<BridgeConnectionForm>): Promise<BridgeConnectionState> => {
@@ -307,7 +354,9 @@ const sendReset = async (): Promise<void> => {
     await jniApi.sendReset();
 };
 
-const triggerOnceAndWaitForFrame = async (timeoutMs = 15000): Promise<ImageFrameRecord> => {
+// 浏览器兜底超时略长于后端的15秒事务超时，使后端有机会先发送带数据库结果码的
+// capture_failed事件；20秒只处理WebSocket异常等极端情况。
+const triggerOnceAndWaitForFrame = async (timeoutMs = 20000): Promise<ImageFrameRecord> => {
     ensureConnected();
     await ensureWebSocket();
     const waitForFrame = createPendingRequest(
@@ -320,6 +369,8 @@ const triggerOnceAndWaitForFrame = async (timeoutMs = 15000): Promise<ImageFrame
     );
 
     try {
+        // 同步响应只表示触发已成功登记并发送；最终结果仍由image_frame或
+        // capture_failed WebSocket事件完成pendingFrame。
         await jniApi.sendTriggerOnce();
     } catch (error) {
         pendingFrame = rejectPendingRequest(
@@ -389,10 +440,13 @@ const sendFullConfigAndWait = async (configBytes: number[], timeoutMs = 10000): 
 
 export const jniBridgeService = {
     initialize,
+    loadImageHistory,
     connect,
     disconnect,
     sendReset,
     triggerOnceAndWaitForFrame,
     queryStatusAndWait,
     sendFullConfigAndWait,
+    deleteImage,
+    clearImages,
 };

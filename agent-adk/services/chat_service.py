@@ -46,7 +46,7 @@ class ChatService:
                 elif intent_type == "trigger_once":
                     prompt = (
                         "用户希望获取一帧光谱图像。"
-                        "前端将发送单帧触发命令，图像通过回调显示，历史帧写入 localStorage。"
+                        "前端将发送单帧触发命令，图像通过回调显示，历史帧和完整性结果写入 PostgreSQL。"
                         "请给出一句简短确认。"
                     )
                 elif intent_type == "query_status":

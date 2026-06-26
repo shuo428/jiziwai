@@ -74,7 +74,7 @@ class SpectralAssistantAgent:
                 "当前系统使用 SpectraBridgeNative JNI 接口，不再使用旧的持续监听或按数量采集。"
                 "连接设备时需要 host、controlPort 和 imagePort。"
                 "连接成功后才可以复位、触发单帧、查询状态或发送 512 字节完整配置。"
-                "图像帧和状态回调通过前端 WebSocket 展示；历史图像暂存在浏览器 localStorage。"
+                "图像帧和状态回调通过前端 WebSocket 展示；历史图像、原始数据和完整性结果保存在服务器与 PostgreSQL。"
                 "回答简洁、结构化，默认使用中文。"
             ),
             tools=[

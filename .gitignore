@@ -35,3 +35,7 @@ build/
 **/__pycache__/
 *.py[cod]
 agent-adk/.venv/
+
+# Runtime spectral frames are persisted on disk and referenced by PostgreSQL.
+# They are data, not source code, and can grow by roughly 9.66 GiB per day.
+springboot-jni/data/

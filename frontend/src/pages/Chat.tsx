@@ -218,7 +218,7 @@ const ChatPage: React.FC = () => {
                         "",
                         `- 尺寸：**${frame.width} x ${frame.height}**`,
                         "- 当前图片已显示在 **光谱桥接控制** 页面",
-                        "- 历史图片已缓存到 **localStorage**",
+                        "- 原始图片、预览图和完整性结果已保存到 **服务器与PostgreSQL**",
                     ].join("\n"),
                 );
             } else if (result.intent?.type === "query_status") {

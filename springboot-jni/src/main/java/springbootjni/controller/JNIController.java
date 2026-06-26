@@ -1,12 +1,17 @@
 package springbootjni.controller;
 
+import cn.dev33.satoken.stp.StpUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 import springbootjni.dto.ApiResponse;
 import springbootjni.dto.jni.BridgeConnectRequest;
 import springbootjni.dto.jni.BridgeFullConfigRequest;
 import springbootjni.dto.jni.BridgeStateResponse;
+import springbootjni.dto.jni.ImageFrameResponse;
+import springbootjni.dto.jni.TriggerCaptureResponse;
 import springbootjni.service.JNIService;
+
+import java.util.List;
 
 @RestController
 @RequiredArgsConstructor
@@ -54,12 +59,52 @@ public class JNIController {
     }
 
     @PostMapping("/commands/trigger-once")
-    public ApiResponse<String> sendTriggerOnce() {
+    public ApiResponse<TriggerCaptureResponse> sendTriggerOnce() {
         try {
-            jniService.sendTriggerOnce();
-            return ApiResponse.success("Trigger-once command sent successfully");
+            Long userId = StpUtil.getLoginIdAsLong();
+            TriggerCaptureResponse response = jniService.sendTriggerOnce(userId);
+            return ApiResponse.success("Trigger-once command sent successfully", response);
         } catch (Exception e) {
             return ApiResponse.error("Failed to send trigger-once command: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 从PostgreSQL和磁盘加载当前用户的历史图片。
+     * 图片不再由浏览器localStorage提供，因此刷新页面或更换浏览器后仍可查询。
+     */
+    @GetMapping("/images")
+    public ApiResponse<List<ImageFrameResponse>> listImages() {
+        try {
+            return ApiResponse.success(jniService.listImages(StpUtil.getLoginIdAsLong()));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to list images: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 删除一张图片时同时删除数据库采集记录及磁盘上的原始图、预览图。
+     */
+    @DeleteMapping("/images/{imageId}")
+    public ApiResponse<Boolean> deleteImage(@PathVariable long imageId) {
+        try {
+            boolean deleted = jniService.deleteImage(StpUtil.getLoginIdAsLong(), imageId);
+            return ApiResponse.success(deleted ? "Image deleted successfully" : "Image not found", deleted);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to delete image: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 只清空当前登录用户的采集历史，不影响其他用户。
+     */
+    @DeleteMapping("/images")
+    public ApiResponse<Integer> clearImages() {
+        try {
+            int deleted = jniService.clearImages(StpUtil.getLoginIdAsLong());
+            return ApiResponse.success("Image history cleared successfully", deleted);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to clear images: " + e.getMessage());
         }
     }
 

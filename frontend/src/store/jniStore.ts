@@ -28,7 +28,8 @@ type JNIStore = {
         setWebsocketConnected: (connected: boolean) => void;
         setError: (error: string | null) => void;
         pushImageFrame: (frame: ImageFrameRecord) => void;
-        removeImageFrame: (id: string) => void;
+        replaceImageHistory: (frames: ImageFrameRecord[]) => void;
+        removeImageFrame: (id: number) => void;
         clearImageHistory: () => void;
         pushStatus: (status: StatusRecord) => void;
         pushConfigAck: (ack: ConfigAckRecord) => void;
@@ -104,6 +105,12 @@ export const useJNIStore = create<JNIStore>()(
                         imageHistory: [frame, ...state.imageHistory.filter((item) => item.id !== frame.id)].slice(0, 50),
                     }));
                 },
+                replaceImageHistory: (frames) => {
+                    set({
+                        imageHistory: frames,
+                        currentImage: frames[0] ?? null,
+                    });
+                },
                 removeImageFrame: (id) => {
                     set((state) => ({
                         currentImage: state.currentImage?.id === id ? null : state.currentImage,
@@ -149,9 +156,15 @@ export const useJNIStore = create<JNIStore>()(
         {
             name: "jni-store",
             storage: createJSONStorage(() => localStorage),
+            version: 2,
+            // 版本1曾把完整PNG data URL保存在localStorage中。升级到版本2时只迁移
+            // 连接表单和512字节配置，历史图片改为登录后从PostgreSQL加载。
+            migrate: (persistedState: any) => ({
+                connectionForm: persistedState?.connectionForm ?? DEFAULT_CONNECTION_FORM,
+                configBytes: persistedState?.configBytes ?? DEFAULT_CONFIG_BYTES,
+            }),
             partialize: (state) => ({
                 connectionForm: state.connectionForm,
-                imageHistory: state.imageHistory,
                 configBytes: state.configBytes,
             }),
         }

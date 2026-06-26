@@ -1,35 +1,54 @@
-import React, { useState } from "react";
-import { Button, Card, Empty, Modal, Space, Table, Tag, Typography } from "antd";
+import React, { useEffect, useState } from "react";
+import { Button, Card, Empty, Modal, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { Clock, Database, Eye, Image as ImageIcon, Save, Trash2 } from "lucide-react";
+import { Clock, Database, Eye, Image as ImageIcon, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
+import { jniBridgeService } from "../service/jniBridgeService";
 import { useJNIStore } from "../store/jniStore";
 import type { ImageFrameRecord } from "../types/jni";
 
 const { Title, Text } = Typography;
 
 const SpectralDataManagementPage: React.FC = () => {
-    const { imageHistory, actions } = useJNIStore();
+    const { imageHistory } = useJNIStore();
     const [selectedFrame, setSelectedFrame] = useState<ImageFrameRecord | null>(null);
     const [previewVisible, setPreviewVisible] = useState(false);
+    const [loading, setLoading] = useState(false);
 
-    const handleSaveToDatabase = (record: ImageFrameRecord) => {
-        toast.success("已保留图像帧", {
-            description: `图像帧 ${record.width}x${record.height} 后续可接入数据库或 OSS`,
-        });
+    /**
+     * 历史图片的唯一数据源是后端数据库和服务器文件系统。
+     * 页面刷新后重新请求数据库，不再读取浏览器localStorage中的PNG data URL。
+     */
+    const loadHistory = async () => {
+        setLoading(true);
+        try {
+            await jniBridgeService.loadImageHistory();
+        } catch (error: any) {
+            toast.error(error?.message || "加载数据库图片失败");
+        } finally {
+            setLoading(false);
+        }
     };
 
-    const handleDiscard = (record: ImageFrameRecord) => {
+    useEffect(() => {
+        loadHistory();
+    }, []);
+
+    const handleDelete = (record: ImageFrameRecord) => {
         Modal.confirm({
-            title: "确认丢弃",
-            content: "确定要从 localStorage 删除这帧图像吗？",
-            okText: "确认丢弃",
+            title: "确认删除",
+            content: "将同时删除数据库记录、原始12-bit文件和预览图，确定继续吗？",
+            okText: "确认删除",
             cancelText: "取消",
             okButtonProps: { danger: true },
-            onOk: () => {
-                actions.removeImageFrame(record.id);
-                toast.success("已丢弃");
+            onOk: async () => {
+                await jniBridgeService.deleteImage(record.id);
+                if (selectedFrame?.id === record.id) {
+                    setSelectedFrame(null);
+                    setPreviewVisible(false);
+                }
+                toast.success("数据库图片已删除");
             },
         });
     };
@@ -42,13 +61,15 @@ const SpectralDataManagementPage: React.FC = () => {
     const handleClearAll = () => {
         Modal.confirm({
             title: "确认清空",
-            content: "确定要清空所有历史图像帧吗？此操作不可恢复。",
+            content: "确定要清空当前用户的所有数据库图像和服务器文件吗？此操作不可恢复。",
             okText: "确认清空",
             cancelText: "取消",
             okButtonProps: { danger: true },
-            onOk: () => {
-                actions.clearImageHistory();
-                toast.success("已清空");
+            onOk: async () => {
+                await jniBridgeService.clearImages();
+                setSelectedFrame(null);
+                setPreviewVisible(false);
+                toast.success("数据库历史已清空");
             },
         });
     };
@@ -70,7 +91,7 @@ const SpectralDataManagementPage: React.FC = () => {
             ),
         },
         {
-            title: "帧信息",
+            title: "图像信息",
             key: "frame",
             render: (_, record) => (
                 <div>
@@ -78,8 +99,11 @@ const SpectralDataManagementPage: React.FC = () => {
                         {record.width} x {record.height}
                     </div>
                     <div className="mt-1 text-xs text-slate-500">
-                        8bit: {(record.raw8Length / 1024).toFixed(2)} KB · 16bit: {(record.raw16Length / 1024).toFixed(2)} KB
+                        {record.pixelFormat} · Payload {(record.payloadLength / 1024).toFixed(2)} KB
                     </div>
+                    <Tag color={record.integrityPassed ? "green" : "red"} className="mt-2">
+                        {record.integrityResultCode || "UNKNOWN"}
+                    </Tag>
                 </div>
             ),
         },
@@ -98,17 +122,14 @@ const SpectralDataManagementPage: React.FC = () => {
         {
             title: "操作",
             key: "action",
-            width: 260,
+            width: 190,
             render: (_, record) => (
                 <Space size="small">
                     <Button type="link" size="small" icon={<Eye size={14} />} onClick={() => handlePreview(record)}>
                         预览
                     </Button>
-                    <Button type="primary" size="small" icon={<Save size={14} />} onClick={() => handleSaveToDatabase(record)}>
-                        保留
-                    </Button>
-                    <Button danger size="small" icon={<Trash2 size={14} />} onClick={() => handleDiscard(record)}>
-                        丢弃
+                    <Button danger size="small" icon={<Trash2 size={14} />} onClick={() => handleDelete(record)}>
+                        删除
                     </Button>
                 </Space>
             ),
@@ -127,11 +148,16 @@ const SpectralDataManagementPage: React.FC = () => {
                             <Title level={4} className="!mb-0 !text-slate-800">
                                 图像帧管理
                             </Title>
-                            <Text className="text-sm text-slate-500">查看和管理 localStorage 中缓存的单帧图像</Text>
+                            <Text className="text-sm text-slate-500">
+                                查看PostgreSQL记录和服务器保存的原始光谱图像
+                            </Text>
                         </div>
                     </div>
 
                     <div className="flex items-center gap-3">
+                        <Button icon={<RefreshCw size={16} />} onClick={loadHistory} loading={loading}>
+                            刷新
+                        </Button>
                         <Tag color="blue" className="px-3 py-1 text-sm">
                             共 {imageHistory.length} 帧
                         </Tag>
@@ -143,12 +169,16 @@ const SpectralDataManagementPage: React.FC = () => {
                     </div>
                 </div>
 
-                {imageHistory.length === 0 ? (
+                {loading && imageHistory.length === 0 ? (
+                    <div className="flex justify-center py-16">
+                        <Spin tip="正在加载数据库图片" />
+                    </div>
+                ) : imageHistory.length === 0 ? (
                     <Empty
                         image={Empty.PRESENTED_IMAGE_SIMPLE}
                         description={
                             <div className="text-slate-500">
-                                <div className="mb-2">暂无历史图像帧</div>
+                                <div className="mb-2">数据库中暂无历史图像帧</div>
                                 <div className="text-sm">请先在“光谱桥接控制”页面获取一帧图片</div>
                             </div>
                         }
@@ -159,6 +189,7 @@ const SpectralDataManagementPage: React.FC = () => {
                         columns={columns}
                         dataSource={imageHistory}
                         rowKey="id"
+                        loading={loading}
                         pagination={{
                             pageSize: 10,
                             showSizeChanger: true,
@@ -172,7 +203,7 @@ const SpectralDataManagementPage: React.FC = () => {
                 title={
                     <div className="flex items-center gap-2">
                         <ImageIcon size={18} />
-                        <span>图像帧预览</span>
+                        <span>数据库图像预览</span>
                     </div>
                 }
                 open={previewVisible}
@@ -181,19 +212,6 @@ const SpectralDataManagementPage: React.FC = () => {
                     <Button key="close" onClick={() => setPreviewVisible(false)}>
                         关闭
                     </Button>,
-                    <Button
-                        key="save"
-                        type="primary"
-                        icon={<Save size={14} />}
-                        onClick={() => {
-                            if (selectedFrame) {
-                                handleSaveToDatabase(selectedFrame);
-                                setPreviewVisible(false);
-                            }
-                        }}
-                    >
-                        保留
-                    </Button>,
                 ]}
                 width={900}
             >
@@ -201,7 +219,11 @@ const SpectralDataManagementPage: React.FC = () => {
                     <div className="space-y-4">
                         <div className="flex min-h-[420px] items-center justify-center rounded-md bg-slate-950">
                             {selectedFrame.imageDataUrl ? (
-                                <img src={selectedFrame.imageDataUrl} alt="图像帧预览" className="max-h-[680px] max-w-full object-contain" />
+                                <img
+                                    src={selectedFrame.imageDataUrl}
+                                    alt="图像帧预览"
+                                    className="max-h-[680px] max-w-full object-contain"
+                                />
                             ) : (
                                 <ImageIcon size={42} className="text-slate-500" />
                             )}
@@ -215,17 +237,17 @@ const SpectralDataManagementPage: React.FC = () => {
                                 </div>
                             </div>
                             <div>
-                                <Text className="text-sm text-slate-500">8bit 数据</Text>
-                                <div className="font-semibold text-slate-800">{selectedFrame.raw8Length} bytes</div>
+                                <Text className="text-sm text-slate-500">像素格式</Text>
+                                <div className="font-semibold text-slate-800">{selectedFrame.pixelFormat}</div>
                             </div>
                             <div>
-                                <Text className="text-sm text-slate-500">16bit 数据</Text>
-                                <div className="font-semibold text-slate-800">{selectedFrame.raw16Length} items</div>
+                                <Text className="text-sm text-slate-500">Payload</Text>
+                                <div className="font-semibold text-slate-800">{selectedFrame.payloadLength} bytes</div>
                             </div>
                             <div>
-                                <Text className="text-sm text-slate-500">接收时间</Text>
+                                <Text className="text-sm text-slate-500">完整性</Text>
                                 <div className="font-semibold text-slate-800">
-                                    {new Date(selectedFrame.timestamp).toLocaleString("zh-CN")}
+                                    {selectedFrame.integrityResultCode || "UNKNOWN"}
                                 </div>
                             </div>
                         </div>

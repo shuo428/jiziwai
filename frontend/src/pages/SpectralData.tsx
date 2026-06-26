@@ -348,9 +348,9 @@ const SpectralDataPage: React.FC = () => {
                         </div>
 
                         <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
-                            <Text className="mb-2 block text-sm text-slate-500">历史帧缓存</Text>
+                            <Text className="mb-2 block text-sm text-slate-500">数据库历史帧</Text>
                             <div className="flex items-center gap-2">
-                                <Tag color="blue">localStorage</Tag>
+                                <Tag color="green">PostgreSQL</Tag>
                                 <Text className="text-sm text-slate-700">{imageHistory.length} 帧</Text>
                             </div>
                         </div>
