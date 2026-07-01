@@ -203,6 +203,18 @@ CREATE TABLE IF NOT EXISTS t_image_quality_analysis (
     spectral_fwhm_pixels NUMERIC(20, 8),
     halo_ratio NUMERIC(20, 12),
 
+    disposition_status VARCHAR(32) NOT NULL DEFAULT 'MANUAL_REVIEW'
+        CHECK (disposition_status IN (
+            'USE_AS_IS',
+            'PROCESS_REQUIRED',
+            'RECAPTURE_RECOMMENDED',
+            'REJECTED',
+            'MANUAL_REVIEW'
+        )),
+    usable_for_spectral BOOLEAN NOT NULL DEFAULT FALSE,
+    disposition_message TEXT,
+    recommended_actions JSONB NOT NULL DEFAULT '{"actions":[],"reasonCodes":[]}'::JSONB,
+
     details JSONB NOT NULL DEFAULT '{}'::JSONB,
     analyzed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -218,12 +230,31 @@ CREATE TABLE IF NOT EXISTS t_image_quality_analysis (
         CHECK (bad_pixel_count IS NULL OR bad_pixel_count >= 0)
 );
 
+ALTER TABLE IF EXISTS t_image_quality_analysis
+    ADD COLUMN IF NOT EXISTS disposition_status VARCHAR(32) NOT NULL DEFAULT 'MANUAL_REVIEW';
+
+ALTER TABLE IF EXISTS t_image_quality_analysis
+    ADD COLUMN IF NOT EXISTS usable_for_spectral BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE IF EXISTS t_image_quality_analysis
+    ADD COLUMN IF NOT EXISTS disposition_message TEXT;
+
+ALTER TABLE IF EXISTS t_image_quality_analysis
+    ADD COLUMN IF NOT EXISTS recommended_actions JSONB NOT NULL DEFAULT '{"actions":[],"reasonCodes":[]}'::JSONB;
+
 CREATE INDEX IF NOT EXISTS idx_quality_status
     ON t_image_quality_analysis(quality_status, analyzed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_quality_disposition
+    ON t_image_quality_analysis(disposition_status, usable_for_spectral, analyzed_at DESC);
 
 COMMENT ON TABLE t_image_quality_analysis IS '每张图像最必要的基础、行列、坏点、弯曲、清晰度和光晕指标';
 COMMENT ON COLUMN t_image_quality_analysis.details IS
     '分位数、直方图、异常坐标、Keystone、鬼影等非核心或未来指标';
+COMMENT ON COLUMN t_image_quality_analysis.disposition_status IS
+    '质量分析后的流程处置：直接使用、处理后使用、建议重采、拒绝或人工复核';
+COMMENT ON COLUMN t_image_quality_analysis.recommended_actions IS
+    '质量处置策略输出的建议动作、原因码和策略版本';
 
 -- ---------------------------------------------------------------------------
 -- Decision/action after analysis
@@ -296,6 +327,10 @@ SELECT
     qa.smile_rms_pixels,
     qa.spectral_fwhm_pixels,
     qa.halo_ratio,
+    qa.disposition_status,
+    qa.usable_for_spectral,
+    qa.disposition_message,
+    qa.recommended_actions,
     qa.analyzed_at
 FROM t_spectral_capture c
 LEFT JOIN t_spectral_image i ON i.capture_id = c.id

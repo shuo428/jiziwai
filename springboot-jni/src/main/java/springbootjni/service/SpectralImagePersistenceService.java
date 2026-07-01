@@ -1,6 +1,7 @@
 package springbootjni.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
@@ -8,11 +9,15 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import springbootjni.dto.jni.ImageFrameResponse;
+import springbootjni.service.SpectralImageQualityDispositionService.QualityDispositionResult;
+import springbootjni.service.SpectralImageQualityAnalysisService.QualityAnalysisResult;
 
 import javax.imageio.ImageIO;
+import javax.annotation.PostConstruct;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
@@ -52,9 +57,35 @@ public class SpectralImagePersistenceService {
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final SpectralImageQualityAnalysisService qualityAnalysisService;
+    private final SpectralImageQualityDispositionService qualityDispositionService;
 
     @Value("${spectral.storage.root:D:/GraduationProject/spectral-images}")
     private String storageRoot;
+
+    /**
+     * 为已有数据库补齐质量处置字段。
+     *
+     * <p>项目早期版本已经创建过 t_image_quality_analysis 表；单纯修改 CREATE TABLE
+     * 无法让 PostgreSQL 自动给旧表增加新列。这里使用 IF EXISTS / IF NOT EXISTS 做
+     * 幂等升级，保证老库启动后也能保存处置策略结果。</p>
+     */
+    @PostConstruct
+    public void ensureQualityDispositionColumns() {
+        jdbcTemplate.execute(
+                "ALTER TABLE IF EXISTS t_image_quality_analysis " +
+                        "ADD COLUMN IF NOT EXISTS disposition_status VARCHAR(32) NOT NULL DEFAULT 'MANUAL_REVIEW'");
+        jdbcTemplate.execute(
+                "ALTER TABLE IF EXISTS t_image_quality_analysis " +
+                        "ADD COLUMN IF NOT EXISTS usable_for_spectral BOOLEAN NOT NULL DEFAULT FALSE");
+        jdbcTemplate.execute(
+                "ALTER TABLE IF EXISTS t_image_quality_analysis " +
+                        "ADD COLUMN IF NOT EXISTS disposition_message TEXT");
+        jdbcTemplate.execute(
+                "ALTER TABLE IF EXISTS t_image_quality_analysis " +
+                        "ADD COLUMN IF NOT EXISTS recommended_actions JSONB NOT NULL " +
+                        "DEFAULT '{\"actions\":[],\"reasonCodes\":[]}'::JSONB");
+    }
 
     /**
      * 在真正向 FPGA 发送触发命令之前创建采集记录。
@@ -144,9 +175,24 @@ public class SpectralImagePersistenceService {
                     elapsedMs,
                     toJson(details));
 
+            /*
+             * 接收完整性只说明“这张图没有在传输和组帧过程中损坏”；
+             * 基础质量分析继续判断“这张完整图是否适合进入后续图像处理/光谱提取”。
+             *
+             * 这里使用原始 RAW12 像素 pixels16，而不是 preview.png：
+             * 1. preview.png 是 8-bit 显示图，已经丢失 12-bit 定量动态范围；
+             * 2. 坏点、饱和比例、黑像素比例等指标必须基于原始数字量 DN；
+             * 3. 后续暗场/平场校正也应基于 RAW 或处理后的 RAW，而不是前端预览图。
+             */
+            QualityAnalysisResult quality = qualityAnalysisService.analyze(width, height, pixels16);
+            QualityDispositionResult disposition = qualityDispositionService.decide(quality);
+            saveQualityAnalysis(imageId, quality, disposition);
+
             jdbcTemplate.update(
-                    "UPDATE t_spectral_capture SET capture_status='PASS', completed_at=CURRENT_TIMESTAMP, " +
-                            "error_message=NULL WHERE id=?",
+                    "UPDATE t_spectral_capture SET capture_status=?, completed_at=CURRENT_TIMESTAMP, " +
+                            "error_message=? WHERE id=?",
+                    quality.toCaptureStatus(),
+                    "PASS".equals(quality.getQualityStatus()) ? null : disposition.getSummaryMessage(),
                     captureId);
 
             return buildResponse(
@@ -159,11 +205,68 @@ public class SpectralImagePersistenceService {
                     rawBytes.length,
                     previewFile,
                     true,
-                    "OK");
+                    "OK",
+                    quality,
+                    disposition);
         } catch (RuntimeException | IOException ex) {
             deleteDirectoryQuietly(frameDirectory);
             throw new IllegalStateException("保存光谱图像失败: " + ex.getMessage(), ex);
         }
+    }
+
+    /**
+     * 将单张图像基础质量分析结果写入 t_image_quality_analysis。
+     *
+     * <p>核心字段保存最常用、最需要查询/排序的指标；详细阈值、分位数、异常行列样本、
+     * 坏点样本等放入 details JSONB。这样既能支持前端列表快速查询，也避免为了每一个
+     * 未来指标反复修改数据库结构。</p>
+     */
+    private void saveQualityAnalysis(Long imageId,
+                                     QualityAnalysisResult quality,
+                                     QualityDispositionResult disposition) {
+        jdbcTemplate.update(
+                "INSERT INTO t_image_quality_analysis " +
+                        "(image_id, quality_status, analysis_version, pixel_min, pixel_max, pixel_mean, " +
+                        "pixel_stddev, black_pixel_ratio, saturation_pixel_ratio, abnormal_row_count, " +
+                        "abnormal_column_count, bad_pixel_count, disposition_status, usable_for_spectral, " +
+                        "disposition_message, recommended_actions, details, analyzed_at) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), " +
+                        "CAST(? AS jsonb), CURRENT_TIMESTAMP) " +
+                        "ON CONFLICT (image_id) DO UPDATE SET " +
+                        "quality_status=EXCLUDED.quality_status, " +
+                        "analysis_version=EXCLUDED.analysis_version, " +
+                        "pixel_min=EXCLUDED.pixel_min, " +
+                        "pixel_max=EXCLUDED.pixel_max, " +
+                        "pixel_mean=EXCLUDED.pixel_mean, " +
+                        "pixel_stddev=EXCLUDED.pixel_stddev, " +
+                        "black_pixel_ratio=EXCLUDED.black_pixel_ratio, " +
+                        "saturation_pixel_ratio=EXCLUDED.saturation_pixel_ratio, " +
+                        "abnormal_row_count=EXCLUDED.abnormal_row_count, " +
+                        "abnormal_column_count=EXCLUDED.abnormal_column_count, " +
+                        "bad_pixel_count=EXCLUDED.bad_pixel_count, " +
+                        "disposition_status=EXCLUDED.disposition_status, " +
+                        "usable_for_spectral=EXCLUDED.usable_for_spectral, " +
+                        "disposition_message=EXCLUDED.disposition_message, " +
+                        "recommended_actions=EXCLUDED.recommended_actions, " +
+                        "details=EXCLUDED.details, " +
+                        "analyzed_at=CURRENT_TIMESTAMP",
+                imageId,
+                quality.getQualityStatus(),
+                quality.getAnalysisVersion(),
+                quality.getPixelMin(),
+                quality.getPixelMax(),
+                quality.getPixelMean(),
+                quality.getPixelStddev(),
+                quality.getBlackPixelRatio(),
+                quality.getSaturationPixelRatio(),
+                quality.getAbnormalRowCount(),
+                quality.getAbnormalColumnCount(),
+                quality.getBadPixelCount(),
+                disposition.getDispositionStatus(),
+                disposition.isUsableForSpectral(),
+                disposition.getSummaryMessage(),
+                toJson(disposition.getDetails()),
+                toJson(quality.getDetails()));
     }
 
     /**
@@ -207,10 +310,15 @@ public class SpectralImagePersistenceService {
         List<StoredImageRow> rows = jdbcTemplate.query(
                 "SELECT i.id AS image_id, c.id AS capture_id, c.request_id, i.received_at, " +
                         "i.width, i.height, i.payload_length, i.pixel_format, i.preview_storage_uri, " +
-                        "ia.passed, ia.result_code " +
+                        "ia.passed, ia.result_code, qa.quality_status, qa.pixel_min, qa.pixel_max, " +
+                        "qa.pixel_mean, qa.pixel_stddev, qa.black_pixel_ratio, qa.saturation_pixel_ratio, " +
+                        "qa.abnormal_row_count, qa.abnormal_column_count, qa.bad_pixel_count, " +
+                        "qa.disposition_status, qa.usable_for_spectral, qa.disposition_message, " +
+                        "qa.recommended_actions, qa.details AS quality_details " +
                         "FROM t_spectral_capture c " +
                         "JOIN t_spectral_image i ON i.capture_id=c.id " +
                         "LEFT JOIN t_image_integrity_analysis ia ON ia.capture_id=c.id " +
+                        "LEFT JOIN t_image_quality_analysis qa ON qa.image_id=i.id " +
                         "WHERE c.user_id=? ORDER BY i.received_at DESC LIMIT ?",
                 (resultSet, rowNum) -> mapStoredImageRow(resultSet),
                 userId,
@@ -360,9 +468,11 @@ public class SpectralImagePersistenceService {
                                              int width,
                                              int height,
                                              long payloadLength,
-                                             Path previewFile,
-                                             Boolean integrityPassed,
-                                             String integrityResultCode) {
+                                              Path previewFile,
+                                              Boolean integrityPassed,
+                                              String integrityResultCode,
+                                              QualityAnalysisResult quality,
+                                              QualityDispositionResult disposition) {
         ImageFrameResponse response = new ImageFrameResponse();
         response.setId(imageId);
         response.setCaptureId(captureId);
@@ -377,6 +487,27 @@ public class SpectralImagePersistenceService {
         response.setImageDataUrl(encodePreviewDataUrl(previewFile));
         response.setIntegrityPassed(integrityPassed);
         response.setIntegrityResultCode(integrityResultCode);
+        if (quality != null) {
+            response.setQualityStatus(quality.getQualityStatus());
+            response.setPixelMin(quality.getPixelMin());
+            response.setPixelMax(quality.getPixelMax());
+            response.setPixelMean(quality.getPixelMean());
+            response.setPixelStddev(quality.getPixelStddev());
+            response.setBlackPixelRatio(quality.getBlackPixelRatio());
+            response.setSaturationPixelRatio(quality.getSaturationPixelRatio());
+            response.setAbnormalRowCount(quality.getAbnormalRowCount());
+            response.setAbnormalColumnCount(quality.getAbnormalColumnCount());
+            response.setBadPixelCount(quality.getBadPixelCount());
+            response.setQualitySummaryMessage(quality.getSummaryMessage());
+            response.setQualityDetails(quality.getDetails());
+        }
+        if (disposition != null) {
+            response.setDispositionStatus(disposition.getDispositionStatus());
+            response.setUsableForSpectral(disposition.isUsableForSpectral());
+            response.setDispositionMessage(disposition.getSummaryMessage());
+            response.setRecommendedActions(disposition.getRecommendedActions());
+            response.setDispositionReasonCodes(disposition.getReasonCodes());
+        }
         return response;
     }
 
@@ -393,10 +524,84 @@ public class SpectralImagePersistenceService {
         row.previewStorageUri = resultSet.getString("preview_storage_uri");
         row.integrityPassed = (Boolean) resultSet.getObject("passed");
         row.integrityResultCode = resultSet.getString("result_code");
+        row.qualityStatus = resultSet.getString("quality_status");
+        row.pixelMin = (Integer) resultSet.getObject("pixel_min");
+        row.pixelMax = (Integer) resultSet.getObject("pixel_max");
+        row.pixelMean = getNullableDouble(resultSet, "pixel_mean");
+        row.pixelStddev = getNullableDouble(resultSet, "pixel_stddev");
+        row.blackPixelRatio = getNullableDouble(resultSet, "black_pixel_ratio");
+        row.saturationPixelRatio = getNullableDouble(resultSet, "saturation_pixel_ratio");
+        row.abnormalRowCount = (Integer) resultSet.getObject("abnormal_row_count");
+        row.abnormalColumnCount = (Integer) resultSet.getObject("abnormal_column_count");
+        row.badPixelCount = (Integer) resultSet.getObject("bad_pixel_count");
+        row.dispositionStatus = resultSet.getString("disposition_status");
+        row.usableForSpectral = (Boolean) resultSet.getObject("usable_for_spectral");
+        row.dispositionMessage = resultSet.getString("disposition_message");
+        row.recommendedActionsPayload = parseJsonMap(resultSet.getString("recommended_actions"));
+        row.qualityDetails = parseJsonMap(resultSet.getString("quality_details"));
+        row.qualitySummaryMessage = buildQualitySummaryMessage(row.qualityStatus, row.qualityDetails);
         return row;
     }
 
+    private Double getNullableDouble(ResultSet resultSet, String columnName) throws SQLException {
+        Object value = resultSet.getObject(columnName);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof BigDecimal) {
+            return ((BigDecimal) value).doubleValue();
+        }
+        if (value instanceof Number) {
+            return ((Number) value).doubleValue();
+        }
+        return Double.valueOf(value.toString());
+    }
+
+    private Map<String, Object> parseJsonMap(String json) {
+        if (json == null || json.trim().isEmpty()) {
+            return Collections.emptyMap();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {
+            });
+        } catch (JsonProcessingException ex) {
+            Map<String, Object> fallback = new LinkedHashMap<>();
+            fallback.put("parseError", ex.getMessage());
+            return fallback;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private String buildQualitySummaryMessage(String qualityStatus, Map<String, Object> qualityDetails) {
+        if (qualityStatus == null) {
+            return null;
+        }
+
+        Object reasonsValue = qualityDetails == null ? null : qualityDetails.get("decisionReasons");
+        if (reasonsValue instanceof List) {
+            List<Object> reasons = (List<Object>) reasonsValue;
+            if (!reasons.isEmpty()) {
+                StringBuilder builder = new StringBuilder("基础质量分析");
+                builder.append(qualityStatus).append(": ");
+                for (int index = 0; index < reasons.size(); index++) {
+                    if (index > 0) {
+                        builder.append("；");
+                    }
+                    builder.append(String.valueOf(reasons.get(index)));
+                }
+                return builder.toString();
+            }
+        }
+
+        return "基础质量分析" + qualityStatus;
+    }
+
     private ImageFrameResponse toResponse(StoredImageRow row) {
+        QualityAnalysisResult quality = row.toQualityAnalysisResult();
+        QualityDispositionResult disposition = row.toQualityDispositionResult();
+        if (quality != null && row.needsDispositionRecompute()) {
+            disposition = qualityDispositionService.decide(quality);
+        }
         return buildResponse(
                 row.imageId,
                 row.captureId,
@@ -407,7 +612,9 @@ public class SpectralImagePersistenceService {
                 row.payloadLength,
                 resolveStorageUri(row.previewStorageUri),
                 row.integrityPassed,
-                row.integrityResultCode);
+                row.integrityResultCode,
+                quality,
+                disposition);
     }
 
     private String firstNonNullUri(ResultSet resultSet) throws SQLException {
@@ -465,5 +672,94 @@ public class SpectralImagePersistenceService {
         private String previewStorageUri;
         private Boolean integrityPassed;
         private String integrityResultCode;
+        private String qualityStatus;
+        private Integer pixelMin;
+        private Integer pixelMax;
+        private Double pixelMean;
+        private Double pixelStddev;
+        private Double blackPixelRatio;
+        private Double saturationPixelRatio;
+        private Integer abnormalRowCount;
+        private Integer abnormalColumnCount;
+        private Integer badPixelCount;
+        private String qualitySummaryMessage;
+        private Map<String, Object> qualityDetails = Collections.emptyMap();
+        private String dispositionStatus;
+        private Boolean usableForSpectral;
+        private String dispositionMessage;
+        private Map<String, Object> recommendedActionsPayload = Collections.emptyMap();
+
+        private QualityAnalysisResult toQualityAnalysisResult() {
+            if (qualityStatus == null) {
+                return null;
+            }
+            return new QualityAnalysisResult(
+                    qualityStatus,
+                    SpectralImageQualityAnalysisService.ANALYSIS_VERSION,
+                    pixelMin == null ? 0 : pixelMin,
+                    pixelMax == null ? 0 : pixelMax,
+                    pixelMean == null ? 0.0d : pixelMean,
+                    pixelStddev == null ? 0.0d : pixelStddev,
+                    blackPixelRatio == null ? 0.0d : blackPixelRatio,
+                    saturationPixelRatio == null ? 0.0d : saturationPixelRatio,
+                    abnormalRowCount == null ? 0 : abnormalRowCount,
+                    abnormalColumnCount == null ? 0 : abnormalColumnCount,
+                    badPixelCount == null ? 0 : badPixelCount,
+                    qualityDetails == null ? Collections.emptyMap() : qualityDetails,
+                    qualitySummaryMessage);
+        }
+
+        private boolean needsDispositionRecompute() {
+            return dispositionStatus == null
+                    || dispositionMessage == null
+                    || extractActionMaps(recommendedActionsPayload).isEmpty();
+        }
+
+        private QualityDispositionResult toQualityDispositionResult() {
+            if (dispositionStatus == null) {
+                return null;
+            }
+            Map<String, Object> payload = recommendedActionsPayload == null
+                    ? Collections.<String, Object>emptyMap()
+                    : recommendedActionsPayload;
+            return new QualityDispositionResult(
+                    dispositionStatus,
+                    Boolean.TRUE.equals(usableForSpectral),
+                    dispositionMessage,
+                    extractActionMaps(payload),
+                    extractStringList(payload.get("reasonCodes")),
+                    payload);
+        }
+
+        @SuppressWarnings("unchecked")
+        private static List<Map<String, Object>> extractActionMaps(Map<String, Object> payload) {
+            if (payload == null) {
+                return Collections.emptyList();
+            }
+            Object actionsValue = payload.get("actions");
+            if (!(actionsValue instanceof List)) {
+                return Collections.emptyList();
+            }
+            List<Map<String, Object>> actions = new ArrayList<>();
+            for (Object item : (List<?>) actionsValue) {
+                if (item instanceof Map) {
+                    actions.add(new LinkedHashMap<>((Map<String, Object>) item));
+                }
+            }
+            return actions;
+        }
+
+        private static List<String> extractStringList(Object value) {
+            if (!(value instanceof List)) {
+                return Collections.emptyList();
+            }
+            List<String> result = new ArrayList<>();
+            for (Object item : (List<?>) value) {
+                if (item != null) {
+                    result.add(String.valueOf(item));
+                }
+            }
+            return result;
+        }
     }
 }

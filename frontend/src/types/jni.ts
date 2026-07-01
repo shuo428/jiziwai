@@ -12,6 +12,15 @@ export interface BridgeConnectionState extends BridgeConnectionForm {
     fullConfigSize: number;
 }
 
+export interface QualityRecommendedAction {
+    code: string;
+    label: string;
+    stage: string;
+    severity: string;
+    reason: string;
+    repairable: boolean;
+}
+
 export interface ImageFrameRecord {
     id: number;
     captureId: number;
@@ -26,6 +35,23 @@ export interface ImageFrameRecord {
     imageDataUrl: string;
     integrityPassed: boolean | null;
     integrityResultCode: string | null;
+    qualityStatus: string | null;
+    pixelMin: number | null;
+    pixelMax: number | null;
+    pixelMean: number | null;
+    pixelStddev: number | null;
+    blackPixelRatio: number | null;
+    saturationPixelRatio: number | null;
+    abnormalRowCount: number | null;
+    abnormalColumnCount: number | null;
+    badPixelCount: number | null;
+    qualitySummaryMessage: string | null;
+    qualityDetails: Record<string, unknown> | null;
+    dispositionStatus: string | null;
+    usableForSpectral: boolean | null;
+    dispositionMessage: string | null;
+    recommendedActions: QualityRecommendedAction[];
+    dispositionReasonCodes: string[];
 }
 
 export interface TriggerCaptureResponse {
