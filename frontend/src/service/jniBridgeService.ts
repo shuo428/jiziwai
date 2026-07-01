@@ -6,6 +6,7 @@ import type {
     ConfigAckRecord,
     ImageFrameRecord,
     JniEventEnvelope,
+    QualityRecommendedAction,
     StatusRecord,
     TransportErrorRecord,
 } from "../types/jni";
@@ -73,8 +74,30 @@ const applyConnectionState = (state: Partial<BridgeConnectionState>): void => {
     }
 };
 
-const handleImageFrame = (timestamp: string, payload: any): void => {
-    const frame: ImageFrameRecord = {
+const parseRecommendedActions = (value: unknown): QualityRecommendedAction[] => {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value
+        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+        .map((item) => ({
+            code: typeof item.code === "string" ? item.code : "UNKNOWN_ACTION",
+            label: typeof item.label === "string" ? item.label : "未知建议",
+            stage: typeof item.stage === "string" ? item.stage : "REVIEW",
+            severity: typeof item.severity === "string" ? item.severity : "INFO",
+            reason: typeof item.reason === "string" ? item.reason : "",
+            repairable: typeof item.repairable === "boolean" ? item.repairable : false,
+        }));
+};
+
+const parseStringArray = (value: unknown): string[] => {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.filter((item): item is string => typeof item === "string");
+};
+
+const normalizeImageFrame = (timestamp: string, payload: any): ImageFrameRecord => ({
         id: Number(payload?.id ?? 0),
         captureId: Number(payload?.captureId ?? 0),
         requestId: typeof payload?.requestId === "string" ? payload.requestId : "",
@@ -89,8 +112,31 @@ const handleImageFrame = (timestamp: string, payload: any): void => {
         integrityPassed: typeof payload?.integrityPassed === "boolean" ? payload.integrityPassed : null,
         integrityResultCode:
             typeof payload?.integrityResultCode === "string" ? payload.integrityResultCode : null,
-    };
+        qualityStatus: typeof payload?.qualityStatus === "string" ? payload.qualityStatus : null,
+        pixelMin: typeof payload?.pixelMin === "number" ? payload.pixelMin : null,
+        pixelMax: typeof payload?.pixelMax === "number" ? payload.pixelMax : null,
+        pixelMean: typeof payload?.pixelMean === "number" ? payload.pixelMean : null,
+        pixelStddev: typeof payload?.pixelStddev === "number" ? payload.pixelStddev : null,
+        blackPixelRatio: typeof payload?.blackPixelRatio === "number" ? payload.blackPixelRatio : null,
+        saturationPixelRatio:
+            typeof payload?.saturationPixelRatio === "number" ? payload.saturationPixelRatio : null,
+        abnormalRowCount: typeof payload?.abnormalRowCount === "number" ? payload.abnormalRowCount : null,
+        abnormalColumnCount:
+            typeof payload?.abnormalColumnCount === "number" ? payload.abnormalColumnCount : null,
+        badPixelCount: typeof payload?.badPixelCount === "number" ? payload.badPixelCount : null,
+        qualitySummaryMessage:
+            typeof payload?.qualitySummaryMessage === "string" ? payload.qualitySummaryMessage : null,
+        qualityDetails:
+            payload?.qualityDetails && typeof payload.qualityDetails === "object" ? payload.qualityDetails : null,
+        dispositionStatus: typeof payload?.dispositionStatus === "string" ? payload.dispositionStatus : null,
+        usableForSpectral: typeof payload?.usableForSpectral === "boolean" ? payload.usableForSpectral : null,
+        dispositionMessage: typeof payload?.dispositionMessage === "string" ? payload.dispositionMessage : null,
+        recommendedActions: parseRecommendedActions(payload?.recommendedActions),
+        dispositionReasonCodes: parseStringArray(payload?.dispositionReasonCodes),
+});
 
+const handleImageFrame = (timestamp: string, payload: any): void => {
+    const frame = normalizeImageFrame(timestamp, payload);
     useJNIStore.getState().actions.pushImageFrame(frame);
     if (pendingFrame) {
         clearPendingRequest(pendingFrame);
@@ -286,8 +332,9 @@ const initialize = async (): Promise<BridgeConnectionState> => {
         jniApi.getState(),
         jniApi.listImages(),
     ]);
+    const normalizedFrames = frames.map((frame) => normalizeImageFrame(frame.timestamp, frame));
     applyConnectionState(state);
-    useJNIStore.getState().actions.replaceImageHistory(frames);
+    useJNIStore.getState().actions.replaceImageHistory(normalizedFrames);
     return state;
 };
 
@@ -297,8 +344,9 @@ const initialize = async (): Promise<BridgeConnectionState> => {
  */
 const loadImageHistory = async (): Promise<ImageFrameRecord[]> => {
     const frames = await jniApi.listImages();
-    useJNIStore.getState().actions.replaceImageHistory(frames);
-    return frames;
+    const normalizedFrames = frames.map((frame) => normalizeImageFrame(frame.timestamp, frame));
+    useJNIStore.getState().actions.replaceImageHistory(normalizedFrames);
+    return normalizedFrames;
 };
 
 const deleteImage = async (imageId: number): Promise<void> => {

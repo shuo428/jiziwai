@@ -3,6 +3,8 @@ package springbootjni.dto.jni;
 import lombok.Data;
 
 import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 前端使用的图像记录。
@@ -25,4 +27,21 @@ public class ImageFrameResponse {
     private String imageDataUrl;
     private Boolean integrityPassed;
     private String integrityResultCode;
+    private String qualityStatus;
+    private Integer pixelMin;
+    private Integer pixelMax;
+    private Double pixelMean;
+    private Double pixelStddev;
+    private Double blackPixelRatio;
+    private Double saturationPixelRatio;
+    private Integer abnormalRowCount;
+    private Integer abnormalColumnCount;
+    private Integer badPixelCount;
+    private String qualitySummaryMessage;
+    private Map<String, Object> qualityDetails;
+    private String dispositionStatus;
+    private Boolean usableForSpectral;
+    private String dispositionMessage;
+    private List<Map<String, Object>> recommendedActions;
+    private List<String> dispositionReasonCodes;
 }
