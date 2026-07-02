@@ -78,6 +78,41 @@ type QualityMetricExplanation = {
     status: MetricStatus;
 };
 
+type QualityMetricSource = {
+    qualityStatus: string | null;
+    pixelMin: number | null;
+    pixelMax: number | null;
+    pixelMean: number | null;
+    pixelStddev: number | null;
+    blackPixelRatio: number | null;
+    saturationPixelRatio: number | null;
+    abnormalRowCount: number | null;
+    abnormalColumnCount: number | null;
+    badPixelCount: number | null;
+    qualitySummaryMessage: string | null;
+    qualityDetails: Record<string, unknown> | null;
+};
+
+type QualityViewMode = "before" | "after";
+
+const numberFromRecord = (record: Record<string, unknown> | null | undefined, key: string): number | null => {
+    const value = record?.[key];
+    return typeof value === "number" ? value : null;
+};
+
+const stringFromRecord = (record: Record<string, unknown> | null | undefined, key: string): string | null => {
+    const value = record?.[key];
+    return typeof value === "string" ? value : null;
+};
+
+const objectFromRecord = (
+    record: Record<string, unknown> | null | undefined,
+    key: string,
+): Record<string, unknown> | null => {
+    const value = record?.[key];
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+};
+
 const metricColor = (status: MetricStatus): string => {
     if (status === "PASS") {
         return "green";
@@ -117,8 +152,117 @@ const actionColor = (severity?: string | null): string => {
     return "default";
 };
 
+const processingColor = (status?: string | null): string => {
+    if (status === "PROCESSED") {
+        return "green";
+    }
+    if (status === "SKIPPED") {
+        return "blue";
+    }
+    if (status === "FAILED") {
+        return "red";
+    }
+    return "default";
+};
+
+const processingLabel = (status?: string | null): string => {
+    if (status === "PROCESSED") {
+        return "已处理";
+    }
+    if (status === "SKIPPED") {
+        return "已跳过";
+    }
+    if (status === "FAILED") {
+        return "处理失败";
+    }
+    return "未处理";
+};
+
+type ProcessingDisplay = {
+    label: string;
+    color: string;
+};
+
+const isProcessedFrame = (frame: ImageFrameRecord | null): boolean =>
+    Boolean(frame?.processedImageDataUrl) || frame?.processingStatus === "PROCESSED";
+
+const hasExecutableProcessingAction = (frame: ImageFrameRecord | null): boolean =>
+    Boolean(
+        frame?.recommendedActions.some(
+            (action) =>
+                action.stage === "PROCESS" &&
+                action.repairable &&
+                (action.code === "BAD_PIXEL_INTERPOLATION" || action.code === "ABNORMAL_LINE_CORRECTION"),
+        ),
+    );
+
+const getProcessingDisabledReason = (frame: ImageFrameRecord | null): string | null => {
+    if (!frame) {
+        return "暂无图像可处理，请先获取一帧图片。";
+    }
+    if (isProcessedFrame(frame)) {
+        return "当前图片已完成图像处理，无需重复处理。";
+    }
+    if (frame.processingStatus === "SKIPPED") {
+        return frame.processingMessage || "当前图片没有可自动修复动作，或无需修复。";
+    }
+    if (
+        frame.qualityStatus === "FAIL" ||
+        frame.dispositionStatus === "RECAPTURE_RECOMMENDED" ||
+        frame.dispositionStatus === "REJECTED"
+    ) {
+        return "当前图片质量为FAIL或建议重采，自动处理不会恢复真实光谱信息，请重新采集。";
+    }
+    if (!hasExecutableProcessingAction(frame)) {
+        return "当前图片没有可自动处理的坏点或少量异常行/列。";
+    }
+    return null;
+};
+
+const getProcessingButtonLabel = (frame: ImageFrameRecord | null, actionLabel: string): string => {
+    if (!frame) {
+        return actionLabel;
+    }
+    if (isProcessedFrame(frame)) {
+        return "已处理";
+    }
+    if (getProcessingDisabledReason(frame)) {
+        return "不可处理";
+    }
+    return actionLabel;
+};
+
+const getProcessingDisplay = (frame: ImageFrameRecord | null): ProcessingDisplay => {
+    if (!frame) {
+        return { label: "未处理", color: "default" };
+    }
+    if (isProcessedFrame(frame)) {
+        return { label: "已处理", color: "green" };
+    }
+    if (frame.processingStatus === "SKIPPED") {
+        return { label: "已跳过", color: "blue" };
+    }
+    if (frame.processingStatus === "FAILED") {
+        return { label: "处理失败", color: "red" };
+    }
+    if (
+        frame.qualityStatus === "FAIL" ||
+        frame.dispositionStatus === "RECAPTURE_RECOMMENDED" ||
+        frame.dispositionStatus === "REJECTED"
+    ) {
+        return { label: "不可处理", color: "red" };
+    }
+    if (!hasExecutableProcessingAction(frame)) {
+        if (frame.qualityStatus === "PASS" || frame.dispositionStatus === "USE_AS_IS") {
+            return { label: "无需处理", color: "green" };
+        }
+        return { label: "不可自动处理", color: "orange" };
+    }
+    return { label: "未处理", color: "default" };
+};
+
 const getQualityThreshold = (
-    frame: ImageFrameRecord | null,
+    frame: QualityMetricSource | null,
     key: string,
     fallback: number,
 ): number => {
@@ -132,7 +276,7 @@ const getQualityThreshold = (
     return fallback;
 };
 
-const getQualityDecisionReasons = (frame: ImageFrameRecord | null): string[] => {
+const getQualityDecisionReasons = (frame: QualityMetricSource | null): string[] => {
     const reasons = frame?.qualityDetails?.decisionReasons;
     if (Array.isArray(reasons)) {
         return reasons.filter((item): item is string => typeof item === "string");
@@ -140,7 +284,7 @@ const getQualityDecisionReasons = (frame: ImageFrameRecord | null): string[] => 
     return [];
 };
 
-const buildQualityMetricExplanations = (frame: ImageFrameRecord | null): QualityMetricExplanation[] => {
+const buildQualityMetricExplanations = (frame: QualityMetricSource | null): QualityMetricExplanation[] => {
     if (!frame) {
         return [];
     }
@@ -266,9 +410,53 @@ const buildQualityMetricExplanations = (frame: ImageFrameRecord | null): Quality
     ];
 };
 
+const buildOriginalQualitySource = (frame: ImageFrameRecord | null): QualityMetricSource | null => {
+    if (!frame) {
+        return null;
+    }
+    const snapshot = frame.originalQualitySnapshot;
+    return {
+        qualityStatus: stringFromRecord(snapshot, "qualityStatus") ?? frame.qualityStatus,
+        pixelMin: numberFromRecord(snapshot, "pixelMin") ?? frame.pixelMin,
+        pixelMax: numberFromRecord(snapshot, "pixelMax") ?? frame.pixelMax,
+        pixelMean: numberFromRecord(snapshot, "pixelMean") ?? frame.pixelMean,
+        pixelStddev: numberFromRecord(snapshot, "pixelStddev") ?? frame.pixelStddev,
+        blackPixelRatio: numberFromRecord(snapshot, "blackPixelRatio") ?? frame.blackPixelRatio,
+        saturationPixelRatio: numberFromRecord(snapshot, "saturationPixelRatio") ?? frame.saturationPixelRatio,
+        abnormalRowCount: numberFromRecord(snapshot, "abnormalRowCount") ?? frame.abnormalRowCount,
+        abnormalColumnCount: numberFromRecord(snapshot, "abnormalColumnCount") ?? frame.abnormalColumnCount,
+        badPixelCount: numberFromRecord(snapshot, "badPixelCount") ?? frame.badPixelCount,
+        qualitySummaryMessage: stringFromRecord(snapshot, "summaryMessage") ?? frame.qualitySummaryMessage,
+        qualityDetails: objectFromRecord(snapshot, "details") ?? frame.qualityDetails,
+    };
+};
+
+const buildProcessedQualitySource = (frame: ImageFrameRecord | null): QualityMetricSource | null => {
+    const snapshot = frame?.processedQualitySnapshot;
+    const qualityStatus = stringFromRecord(snapshot, "qualityStatus") ?? frame?.processedQualityStatus ?? null;
+    if (!frame || !qualityStatus) {
+        return null;
+    }
+    return {
+        qualityStatus,
+        pixelMin: numberFromRecord(snapshot, "pixelMin") ?? frame.processedPixelMin,
+        pixelMax: numberFromRecord(snapshot, "pixelMax") ?? frame.processedPixelMax,
+        pixelMean: numberFromRecord(snapshot, "pixelMean") ?? frame.processedPixelMean,
+        pixelStddev: numberFromRecord(snapshot, "pixelStddev") ?? frame.processedPixelStddev,
+        blackPixelRatio: numberFromRecord(snapshot, "blackPixelRatio") ?? frame.processedBlackPixelRatio,
+        saturationPixelRatio: numberFromRecord(snapshot, "saturationPixelRatio") ?? frame.processedSaturationPixelRatio,
+        abnormalRowCount: numberFromRecord(snapshot, "abnormalRowCount") ?? frame.processedAbnormalRowCount,
+        abnormalColumnCount: numberFromRecord(snapshot, "abnormalColumnCount") ?? frame.processedAbnormalColumnCount,
+        badPixelCount: numberFromRecord(snapshot, "badPixelCount") ?? frame.processedBadPixelCount,
+        qualitySummaryMessage: stringFromRecord(snapshot, "summaryMessage") ?? frame.processedQualitySummaryMessage,
+        qualityDetails: objectFromRecord(snapshot, "details") ?? frame.processedQualityDetails,
+    };
+};
+
 const SpectralDataPage: React.FC = () => {
     const [loadingAction, setLoadingAction] = useState<string | null>(null);
     const [configHexText, setConfigHexText] = useState("");
+    const [qualityViewMode, setQualityViewMode] = useState<QualityViewMode>("before");
     const {
         connectionForm,
         bridgeState,
@@ -279,6 +467,7 @@ const SpectralDataPage: React.FC = () => {
         latestConfigAck,
         configBytes,
         imageHistory,
+        autoProcessAfterCapture,
         actions,
     } = useJNIStore();
 
@@ -290,6 +479,10 @@ const SpectralDataPage: React.FC = () => {
         });
     }, [actions]);
 
+    useEffect(() => {
+        setQualityViewMode(buildProcessedQualitySource(currentImage) ? "after" : "before");
+    }, [currentImage]);
+
     const connectionSummary = useMemo(() => {
         if (!connected) {
             return "未连接";
@@ -297,16 +490,35 @@ const SpectralDataPage: React.FC = () => {
         return `${bridgeState.host}:${bridgeState.controlPort} / image:${bridgeState.imagePort}`;
     }, [bridgeState.controlPort, bridgeState.host, bridgeState.imagePort, connected]);
 
-    const qualityMetricExplanations = useMemo(
-        () => buildQualityMetricExplanations(currentImage),
+    const currentOriginalQualitySource = useMemo(
+        () => buildOriginalQualitySource(currentImage),
         [currentImage],
+    );
+    const currentProcessedQualitySource = useMemo(
+        () => buildProcessedQualitySource(currentImage),
+        [currentImage],
+    );
+    const currentActiveQualitySource = qualityViewMode === "after" && currentProcessedQualitySource
+        ? currentProcessedQualitySource
+        : currentOriginalQualitySource;
+    const qualityMetricExplanations = useMemo(
+        () => buildQualityMetricExplanations(currentActiveQualitySource),
+        [currentActiveQualitySource],
     );
     const problemQualityMetrics = useMemo(
         () => qualityMetricExplanations.filter((metric) => metric.status === "WARNING" || metric.status === "FAIL"),
         [qualityMetricExplanations],
     );
     const qualityDecisionReasons = useMemo(
-        () => getQualityDecisionReasons(currentImage),
+        () => getQualityDecisionReasons(currentActiveQualitySource),
+        [currentActiveQualitySource],
+    );
+    const currentProcessingDisabledReason = useMemo(
+        () => getProcessingDisabledReason(currentImage),
+        [currentImage],
+    );
+    const currentProcessingDisplay = useMemo(
+        () => getProcessingDisplay(currentImage),
         [currentImage],
     );
 
@@ -349,9 +561,25 @@ const SpectralDataPage: React.FC = () => {
     const handleTriggerOnce = () =>
         runAction(
             "trigger",
-            () => jniBridgeService.triggerOnceAndWaitForFrame(),
-            "已获取一帧图像",
+            () => jniBridgeService.triggerOnceAndWaitForFrame({ autoProcess: autoProcessAfterCapture }),
+            autoProcessAfterCapture ? "已获取一帧图像，并已按策略尝试自动处理" : "已获取一帧图像",
         );
+
+    const handleProcessCurrentImage = () => {
+        if (!currentImage) {
+            toast.warning("暂无图像可处理，请先获取一帧图片。");
+            return;
+        }
+        if (currentProcessingDisabledReason) {
+            toast.warning(currentProcessingDisabledReason);
+            return;
+        }
+        return runAction(
+            "process",
+            () => jniBridgeService.processImage(currentImage.id),
+            "当前图像处理完成",
+        );
+    };
 
     const handleQueryStatus = () =>
         runAction(
@@ -499,26 +727,73 @@ const SpectralDataPage: React.FC = () => {
                                 </Title>
                                 <Text className="text-xs text-slate-500">显示最新一帧预览，原始 RAW 已保存在服务器</Text>
                             </div>
-                            <Button
-                                type="primary"
-                                icon={<Camera size={16} />}
-                                loading={loadingAction === "trigger"}
-                                disabled={!connected || loadingAction !== null}
-                                onClick={handleTriggerOnce}
-                            >
-                                获取一帧
-                            </Button>
+                            <div className="flex flex-wrap items-center justify-end gap-2">
+                                <Checkbox
+                                    checked={autoProcessAfterCapture}
+                                    disabled={loadingAction !== null}
+                                    onChange={(event) => actions.setAutoProcessAfterCapture(event.target.checked)}
+                                >
+                                    获取后自动处理
+                                </Checkbox>
+                                <Button
+                                    type="primary"
+                                    icon={<Camera size={16} />}
+                                    loading={loadingAction === "trigger"}
+                                    disabled={!connected || loadingAction !== null}
+                                    onClick={handleTriggerOnce}
+                                >
+                                    获取一帧
+                                </Button>
+                                <Button
+                                    loading={loadingAction === "process"}
+                                    disabled={
+                                        !currentImage ||
+                                        Boolean(currentProcessingDisabledReason) ||
+                                        loadingAction !== null
+                                    }
+                                    onClick={handleProcessCurrentImage}
+                                >
+                                    {getProcessingButtonLabel(currentImage, "处理当前帧")}
+                                </Button>
+                            </div>
                         </div>
 
-                        <div className="flex min-h-[320px] flex-1 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-950 shadow-inner">
+                        <div className="min-h-[320px] flex-1 overflow-hidden rounded-lg border border-slate-200 bg-slate-950 shadow-inner">
                             {currentImage?.imageDataUrl ? (
-                                <img
-                                    src={currentImage.imageDataUrl}
-                                    alt="当前光谱图像"
-                                    className="max-h-[500px] max-w-full object-contain"
-                                />
+                                <div
+                                    className={`grid h-full min-h-[320px] gap-px bg-slate-800 ${
+                                        currentImage.processedImageDataUrl ? "md:grid-cols-2" : "grid-cols-1"
+                                    }`}
+                                >
+                                    <div className="flex min-h-[320px] flex-col bg-slate-950">
+                                        <div className="flex flex-1 items-center justify-center p-2">
+                                            <img
+                                                src={currentImage.imageDataUrl}
+                                                alt="当前原始光谱图像"
+                                                className="max-h-[500px] max-w-full object-contain"
+                                            />
+                                        </div>
+                                        <div className="border-t border-slate-800 px-3 py-2 text-center text-xs font-medium text-slate-300">
+                                            原图
+                                        </div>
+                                    </div>
+                                    {currentImage.processedImageDataUrl && (
+                                        <div className="flex min-h-[320px] flex-col bg-slate-950">
+                                            <div className="flex flex-1 items-center justify-center p-2">
+                                                <img
+                                                    src={currentImage.processedImageDataUrl}
+                                                    alt="当前处理后光谱图像"
+                                                    className="max-h-[500px] max-w-full object-contain"
+                                                />
+                                            </div>
+                                            <div className="border-t border-slate-800 px-3 py-2 text-center text-xs font-medium text-emerald-300">
+                                                处理后
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
                             ) : (
-                                <div className="text-center text-slate-400">
+                                <div className="flex min-h-[320px] flex-col items-center justify-center text-center text-slate-400">
                                     <Camera size={42} className="mx-auto mb-3 opacity-60" />
                                     <Text className="text-slate-400">暂无图像帧</Text>
                                 </div>
@@ -547,6 +822,12 @@ const SpectralDataPage: React.FC = () => {
                                     <Text className="block text-xs text-slate-500">质量状态</Text>
                                     <Tag color={qualityColor(currentImage.qualityStatus)} className="mt-1">
                                         {currentImage.qualityStatus || "NOT_EVALUATED"}
+                                    </Tag>
+                                </div>
+                                <div>
+                                    <Text className="block text-xs text-slate-500">图像处理</Text>
+                                    <Tag color={currentProcessingDisplay.color} className="mt-1">
+                                        {currentProcessingDisplay.label}
                                     </Tag>
                                 </div>
                             </div>
@@ -631,8 +912,8 @@ const SpectralDataPage: React.FC = () => {
                             展开为横向指标面板，便于快速定位导致图片不合格的原因
                         </Text>
                     </div>
-                    <Tag color={qualityColor(currentImage?.qualityStatus)}>
-                        {currentImage?.qualityStatus || "NOT_EVALUATED"}
+                    <Tag color={qualityColor(currentActiveQualitySource?.qualityStatus)}>
+                        {currentActiveQualitySource?.qualityStatus || "NOT_EVALUATED"}
                     </Tag>
                 </div>
 
@@ -640,6 +921,23 @@ const SpectralDataPage: React.FC = () => {
                     <Text className="text-sm text-slate-500">暂无图像，获取一帧后显示质量诊断。</Text>
                 ) : (
                     <div className="space-y-4">
+                        <div className="flex flex-wrap gap-2">
+                            <Button
+                                type={qualityViewMode === "before" ? "primary" : "default"}
+                                onClick={() => setQualityViewMode("before")}
+                            >
+                                处理前
+                            </Button>
+                            <Button
+                                type={qualityViewMode === "after" ? "primary" : "default"}
+                                disabled={!currentProcessedQualitySource}
+                                onClick={() => setQualityViewMode("after")}
+                            >
+                                处理后
+                            </Button>
+                        </div>
+
+                        {qualityViewMode === "before" && (
                         <div className="rounded-lg border border-blue-200 bg-blue-50 p-3">
                             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                                 <Text className="text-sm font-medium text-blue-700">质量处置建议</Text>
@@ -655,6 +953,12 @@ const SpectralDataPage: React.FC = () => {
                             <div className="text-sm leading-relaxed text-slate-600">
                                 {currentImage.dispositionMessage || "暂无处置建议，请先完成质量分析。"}
                             </div>
+                            {currentProcessingDisabledReason && (
+                                <div className="mt-2 rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-xs leading-relaxed text-orange-700">
+                                    {autoProcessAfterCapture ? "自动处理提示" : "处理限制"}：
+                                    {currentProcessingDisabledReason}
+                                </div>
+                            )}
                             {currentImage.recommendedActions.length > 0 && (
                                 <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                                     {currentImage.recommendedActions.map((action) => (
@@ -667,15 +971,77 @@ const SpectralDataPage: React.FC = () => {
                                             </div>
                                             <div className="leading-relaxed text-slate-500">{action.reason}</div>
                                         </div>
-                                    ))}
-                                </div>
-                            )}
+                                ))}
+                            </div>
+                        )}
                         </div>
+                        )}
 
-                        {currentImage.qualityStatus !== "PASS" && (
+                        {qualityViewMode === "after" && currentImage.processingStatus && (
+                            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                    <Text className="text-sm font-medium text-emerald-700">处理后复检结果</Text>
+                                    <div className="flex flex-wrap gap-2">
+                                        <Tag color={processingColor(currentImage.processingStatus)} className="m-0">
+                                            {processingLabel(currentImage.processingStatus)}
+                                        </Tag>
+                                        {currentImage.processedQualityStatus && (
+                                            <Tag color={qualityColor(currentImage.processedQualityStatus)} className="m-0">
+                                                复检 {currentImage.processedQualityStatus}
+                                            </Tag>
+                                        )}
+                                        {typeof currentImage.processedUsableForSpectral === "boolean" && (
+                                            <Tag
+                                                color={currentImage.processedUsableForSpectral ? "green" : "orange"}
+                                                className="m-0"
+                                            >
+                                                {currentImage.processedUsableForSpectral
+                                                    ? "处理后可进入光谱提取"
+                                                    : "处理后仍需复核"}
+                                            </Tag>
+                                        )}
+                                        {currentImage.processedDispositionStatus && (
+                                            <Tag
+                                                color={dispositionColor(currentImage.processedDispositionStatus)}
+                                                className="m-0"
+                                            >
+                                                处置 {currentImage.processedDispositionStatus}
+                                            </Tag>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="text-sm leading-relaxed text-slate-600">
+                                    {currentImage.processedDispositionMessage ||
+                                        currentImage.processingMessage ||
+                                        "已完成当前阶段可执行的图像处理。"}
+                                </div>
+                                {currentImage.executedProcessingActions.length > 0 && (
+                                    <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                                        {currentImage.executedProcessingActions.map((action) => (
+                                            <div
+                                                key={String(action.code)}
+                                                className="rounded-md bg-white/80 p-2.5 text-xs"
+                                            >
+                                                <div className="font-medium text-slate-800">
+                                                    {String(action.label || action.code)}
+                                                </div>
+                                                <div className="mt-1 text-slate-500">
+                                                    修正数量：{String(action.correctedCount ?? "-")}
+                                                </div>
+                                                <div className="mt-1 leading-relaxed text-slate-500">
+                                                    {String(action.method || "")}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {currentActiveQualitySource?.qualityStatus !== "PASS" && (
                             <div className="rounded-lg border border-orange-200 bg-orange-50 p-3">
                                 <Text className="block text-sm font-medium text-orange-700">
-                                    导致当前状态不是 PASS 的指标
+                                    导致当前{qualityViewMode === "after" ? "复检" : ""}状态不是 PASS 的指标
                                 </Text>
                                 {problemQualityMetrics.length > 0 ? (
                                     <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -696,7 +1062,7 @@ const SpectralDataPage: React.FC = () => {
                                     </div>
                                 ) : (
                                     <div className="mt-2 text-sm text-slate-600">
-                                        {currentImage.qualitySummaryMessage ||
+                                        {currentActiveQualitySource?.qualitySummaryMessage ||
                                             qualityDecisionReasons.join("；") ||
                                             "后端返回了非PASS状态，但没有提供具体原因。"}
                                     </div>

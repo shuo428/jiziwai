@@ -177,7 +177,7 @@ public class JNIServiceImpl implements JNIService {
      * 靠到达顺序猜测所属请求更可靠。</p>
      */
     @Override
-    public TriggerCaptureResponse sendTriggerOnce(Long userId) {
+    public TriggerCaptureResponse sendTriggerOnce(Long userId, boolean autoProcess) {
         SpectraBridgeNative nativeBridge = requireConnectedNativeBridge();
         String requestId = UUID.randomUUID().toString();
 
@@ -186,6 +186,7 @@ public class JNIServiceImpl implements JNIService {
         configSnapshot.put("controlPort", controlPort);
         configSnapshot.put("imagePort", imagePort);
         configSnapshot.put("verifyCrc", verifyCrc);
+        configSnapshot.put("autoProcess", autoProcess);
         configSnapshot.put("expectedWidth", 800);
         configSnapshot.put("expectedHeight", 600);
         configSnapshot.put("pixelFormat", "RAW16_LOW12");
@@ -196,7 +197,7 @@ public class JNIServiceImpl implements JNIService {
             }
 
             long captureId = persistenceService.createCapture(userId, requestId, configSnapshot);
-            PendingCapture capture = new PendingCapture(captureId, requestId, verifyCrc);
+            PendingCapture capture = new PendingCapture(captureId, requestId, verifyCrc, autoProcess);
             pendingCapture = capture;
 
             capture.timeoutFuture = captureTimeoutExecutor.schedule(
@@ -216,7 +217,7 @@ public class JNIServiceImpl implements JNIService {
                         ex.getMessage(),
                         null,
                         capture.elapsedMs(),
-                        Collections.singletonMap("requestId", requestId));
+                        capture.failureDetails());
                 throw ex;
             }
 
@@ -277,6 +278,7 @@ public class JNIServiceImpl implements JNIService {
                     pixels16,
                     pixels8,
                     capture.verifyCrc,
+                    capture.autoProcess,
                     capture.elapsedMs());
             broadcastEvent("image_frame", frame);
         } catch (RuntimeException ex) {
@@ -287,7 +289,7 @@ public class JNIServiceImpl implements JNIService {
                     ex.getMessage(),
                     null,
                     capture.elapsedMs(),
-                    Collections.singletonMap("requestId", capture.requestId));
+                    capture.failureDetails());
             broadcastCaptureFailure(capture, "PERSISTENCE_FAILED", ex.getMessage());
         }
     }
@@ -365,6 +367,12 @@ public class JNIServiceImpl implements JNIService {
     @Override
     public List<ImageFrameResponse> listImages(Long userId) {
         return persistenceService.listImages(userId);
+    }
+
+    @Override
+    public ImageFrameResponse processImage(Long userId, long imageId) {
+        ensureNoPendingCaptureForHistoryMutation();
+        return persistenceService.processImage(userId, imageId);
     }
 
     @Override
@@ -530,13 +538,15 @@ public class JNIServiceImpl implements JNIService {
         private final long captureId;
         private final String requestId;
         private final boolean verifyCrc;
+        private final boolean autoProcess;
         private final long startedNanos = System.nanoTime();
         private ScheduledFuture<?> timeoutFuture;
 
-        private PendingCapture(long captureId, String requestId, boolean verifyCrc) {
+        private PendingCapture(long captureId, String requestId, boolean verifyCrc, boolean autoProcess) {
             this.captureId = captureId;
             this.requestId = requestId;
             this.verifyCrc = verifyCrc;
+            this.autoProcess = autoProcess;
         }
 
         private long elapsedMs() {
@@ -547,6 +557,13 @@ public class JNIServiceImpl implements JNIService {
             if (timeoutFuture != null) {
                 timeoutFuture.cancel(false);
             }
+        }
+
+        private Map<String, Object> failureDetails() {
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("requestId", requestId);
+            details.put("autoProcess", autoProcess);
+            return details;
         }
     }
 }

@@ -8,6 +8,7 @@ import springbootjni.dto.jni.BridgeConnectRequest;
 import springbootjni.dto.jni.BridgeFullConfigRequest;
 import springbootjni.dto.jni.BridgeStateResponse;
 import springbootjni.dto.jni.ImageFrameResponse;
+import springbootjni.dto.jni.TriggerCaptureRequest;
 import springbootjni.dto.jni.TriggerCaptureResponse;
 import springbootjni.service.JNIService;
 
@@ -59,10 +60,12 @@ public class JNIController {
     }
 
     @PostMapping("/commands/trigger-once")
-    public ApiResponse<TriggerCaptureResponse> sendTriggerOnce() {
+    public ApiResponse<TriggerCaptureResponse> sendTriggerOnce(
+            @RequestBody(required = false) TriggerCaptureRequest request) {
         try {
             Long userId = StpUtil.getLoginIdAsLong();
-            TriggerCaptureResponse response = jniService.sendTriggerOnce(userId);
+            boolean autoProcess = request != null && Boolean.TRUE.equals(request.getAutoProcess());
+            TriggerCaptureResponse response = jniService.sendTriggerOnce(userId, autoProcess);
             return ApiResponse.success("Trigger-once command sent successfully", response);
         } catch (Exception e) {
             return ApiResponse.error("Failed to send trigger-once command: " + e.getMessage());
@@ -79,6 +82,19 @@ public class JNIController {
             return ApiResponse.success(jniService.listImages(StpUtil.getLoginIdAsLong()));
         } catch (Exception e) {
             return ApiResponse.error("Failed to list images: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 对历史图片执行当前阶段可用的图像处理：坏点插值、少量异常行/列校正和处理后复检。
+     */
+    @PostMapping("/images/{imageId}/process")
+    public ApiResponse<ImageFrameResponse> processImage(@PathVariable long imageId) {
+        try {
+            ImageFrameResponse frame = jniService.processImage(StpUtil.getLoginIdAsLong(), imageId);
+            return ApiResponse.success("Image processed successfully", frame);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to process image: " + e.getMessage());
         }
     }
 

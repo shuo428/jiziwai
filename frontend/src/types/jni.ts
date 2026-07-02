@@ -47,16 +47,41 @@ export interface ImageFrameRecord {
     badPixelCount: number | null;
     qualitySummaryMessage: string | null;
     qualityDetails: Record<string, unknown> | null;
+    originalQualitySnapshot: Record<string, unknown> | null;
     dispositionStatus: string | null;
     usableForSpectral: boolean | null;
     dispositionMessage: string | null;
     recommendedActions: QualityRecommendedAction[];
     dispositionReasonCodes: string[];
+    processedImageDataUrl: string;
+    processingStatus: string | null;
+    processingMessage: string | null;
+    executedProcessingActions: Array<Record<string, unknown>>;
+    processedQualityStatus: string | null;
+    processedPixelMin: number | null;
+    processedPixelMax: number | null;
+    processedPixelMean: number | null;
+    processedPixelStddev: number | null;
+    processedBlackPixelRatio: number | null;
+    processedSaturationPixelRatio: number | null;
+    processedAbnormalRowCount: number | null;
+    processedAbnormalColumnCount: number | null;
+    processedBadPixelCount: number | null;
+    processedQualitySummaryMessage: string | null;
+    processedQualityDetails: Record<string, unknown> | null;
+    processedQualitySnapshot: Record<string, unknown> | null;
+    processedDispositionStatus: string | null;
+    processedUsableForSpectral: boolean | null;
+    processedDispositionMessage: string | null;
 }
 
 export interface TriggerCaptureResponse {
     captureId: number;
     requestId: string;
+}
+
+export interface TriggerCaptureOptions {
+    autoProcess: boolean;
 }
 
 export interface StatusRecord {
