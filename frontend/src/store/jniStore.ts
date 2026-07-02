@@ -22,11 +22,13 @@ type JNIStore = {
     latestConfigAck: ConfigAckRecord | null;
     transportErrors: TransportErrorRecord[];
     configBytes: number[];
+    autoProcessAfterCapture: boolean;
     actions: {
         setConnectionField: <K extends keyof BridgeConnectionForm>(field: K, value: BridgeConnectionForm[K]) => void;
         hydrateBridgeState: (state: Partial<BridgeConnectionState>) => void;
         setWebsocketConnected: (connected: boolean) => void;
         setError: (error: string | null) => void;
+        setAutoProcessAfterCapture: (enabled: boolean) => void;
         pushImageFrame: (frame: ImageFrameRecord) => void;
         replaceImageHistory: (frames: ImageFrameRecord[]) => void;
         removeImageFrame: (id: number) => void;
@@ -71,6 +73,7 @@ export const useJNIStore = create<JNIStore>()(
             latestConfigAck: null,
             transportErrors: [],
             configBytes: DEFAULT_CONFIG_BYTES,
+            autoProcessAfterCapture: false,
 
             actions: {
                 setConnectionField: (field, value) => {
@@ -98,6 +101,9 @@ export const useJNIStore = create<JNIStore>()(
                 setWebsocketConnected: (connected) => set({ websocketConnected: connected }),
                 setError: (error: string | null) => {
                     set({ error });
+                },
+                setAutoProcessAfterCapture: (enabled) => {
+                    set({ autoProcessAfterCapture: enabled });
                 },
                 pushImageFrame: (frame) => {
                     set((state) => ({
@@ -156,16 +162,19 @@ export const useJNIStore = create<JNIStore>()(
         {
             name: "jni-store",
             storage: createJSONStorage(() => localStorage),
-            version: 2,
-            // 版本1曾把完整PNG data URL保存在localStorage中。升级到版本2时只迁移
+            version: 3,
+            // 版本1曾把完整PNG data URL保存在localStorage中。升级到版本2后只迁移
             // 连接表单和512字节配置，历史图片改为登录后从PostgreSQL加载。
+            // 版本3追加“获取后自动处理”开关，避免切换页面或刷新后丢失用户选择。
             migrate: (persistedState: any) => ({
                 connectionForm: persistedState?.connectionForm ?? DEFAULT_CONNECTION_FORM,
                 configBytes: persistedState?.configBytes ?? DEFAULT_CONFIG_BYTES,
+                autoProcessAfterCapture: persistedState?.autoProcessAfterCapture ?? false,
             }),
             partialize: (state) => ({
                 connectionForm: state.connectionForm,
                 configBytes: state.configBytes,
+                autoProcessAfterCapture: state.autoProcessAfterCapture,
             }),
         }
     )

@@ -8,6 +8,7 @@ import type {
     JniEventEnvelope,
     QualityRecommendedAction,
     StatusRecord,
+    TriggerCaptureOptions,
     TransportErrorRecord,
 } from "../types/jni";
 
@@ -97,6 +98,13 @@ const parseStringArray = (value: unknown): string[] => {
     return value.filter((item): item is string => typeof item === "string");
 };
 
+const parseRecordArray = (value: unknown): Array<Record<string, unknown>> => {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
+};
+
 const normalizeImageFrame = (timestamp: string, payload: any): ImageFrameRecord => ({
         id: Number(payload?.id ?? 0),
         captureId: Number(payload?.captureId ?? 0),
@@ -128,11 +136,52 @@ const normalizeImageFrame = (timestamp: string, payload: any): ImageFrameRecord 
             typeof payload?.qualitySummaryMessage === "string" ? payload.qualitySummaryMessage : null,
         qualityDetails:
             payload?.qualityDetails && typeof payload.qualityDetails === "object" ? payload.qualityDetails : null,
+        originalQualitySnapshot:
+            payload?.originalQualitySnapshot && typeof payload.originalQualitySnapshot === "object"
+                ? payload.originalQualitySnapshot
+                : null,
         dispositionStatus: typeof payload?.dispositionStatus === "string" ? payload.dispositionStatus : null,
         usableForSpectral: typeof payload?.usableForSpectral === "boolean" ? payload.usableForSpectral : null,
         dispositionMessage: typeof payload?.dispositionMessage === "string" ? payload.dispositionMessage : null,
         recommendedActions: parseRecommendedActions(payload?.recommendedActions),
         dispositionReasonCodes: parseStringArray(payload?.dispositionReasonCodes),
+        processedImageDataUrl: typeof payload?.processedImageDataUrl === "string" ? payload.processedImageDataUrl : "",
+        processingStatus: typeof payload?.processingStatus === "string" ? payload.processingStatus : null,
+        processingMessage: typeof payload?.processingMessage === "string" ? payload.processingMessage : null,
+        executedProcessingActions: parseRecordArray(payload?.executedProcessingActions),
+        processedQualityStatus:
+            typeof payload?.processedQualityStatus === "string" ? payload.processedQualityStatus : null,
+        processedPixelMin: typeof payload?.processedPixelMin === "number" ? payload.processedPixelMin : null,
+        processedPixelMax: typeof payload?.processedPixelMax === "number" ? payload.processedPixelMax : null,
+        processedPixelMean: typeof payload?.processedPixelMean === "number" ? payload.processedPixelMean : null,
+        processedPixelStddev:
+            typeof payload?.processedPixelStddev === "number" ? payload.processedPixelStddev : null,
+        processedBlackPixelRatio:
+            typeof payload?.processedBlackPixelRatio === "number" ? payload.processedBlackPixelRatio : null,
+        processedSaturationPixelRatio:
+            typeof payload?.processedSaturationPixelRatio === "number" ? payload.processedSaturationPixelRatio : null,
+        processedAbnormalRowCount:
+            typeof payload?.processedAbnormalRowCount === "number" ? payload.processedAbnormalRowCount : null,
+        processedAbnormalColumnCount:
+            typeof payload?.processedAbnormalColumnCount === "number" ? payload.processedAbnormalColumnCount : null,
+        processedBadPixelCount:
+            typeof payload?.processedBadPixelCount === "number" ? payload.processedBadPixelCount : null,
+        processedQualitySummaryMessage:
+            typeof payload?.processedQualitySummaryMessage === "string" ? payload.processedQualitySummaryMessage : null,
+        processedQualityDetails:
+            payload?.processedQualityDetails && typeof payload.processedQualityDetails === "object"
+                ? payload.processedQualityDetails
+                : null,
+        processedQualitySnapshot:
+            payload?.processedQualitySnapshot && typeof payload.processedQualitySnapshot === "object"
+                ? payload.processedQualitySnapshot
+                : null,
+        processedDispositionStatus:
+            typeof payload?.processedDispositionStatus === "string" ? payload.processedDispositionStatus : null,
+        processedUsableForSpectral:
+            typeof payload?.processedUsableForSpectral === "boolean" ? payload.processedUsableForSpectral : null,
+        processedDispositionMessage:
+            typeof payload?.processedDispositionMessage === "string" ? payload.processedDispositionMessage : null,
 });
 
 const handleImageFrame = (timestamp: string, payload: any): void => {
@@ -356,6 +405,13 @@ const deleteImage = async (imageId: number): Promise<void> => {
     }
 };
 
+const processImage = async (imageId: number): Promise<ImageFrameRecord> => {
+    const frame = await jniApi.processImage(imageId);
+    const normalizedFrame = normalizeImageFrame(frame.timestamp, frame);
+    useJNIStore.getState().actions.pushImageFrame(normalizedFrame);
+    return normalizedFrame;
+};
+
 const clearImages = async (): Promise<void> => {
     await jniApi.clearImages();
     useJNIStore.getState().actions.clearImageHistory();
@@ -404,7 +460,10 @@ const sendReset = async (): Promise<void> => {
 
 // 浏览器兜底超时略长于后端的15秒事务超时，使后端有机会先发送带数据库结果码的
 // capture_failed事件；20秒只处理WebSocket异常等极端情况。
-const triggerOnceAndWaitForFrame = async (timeoutMs = 20000): Promise<ImageFrameRecord> => {
+const triggerOnceAndWaitForFrame = async (
+    options: TriggerCaptureOptions = { autoProcess: false },
+    timeoutMs = 20000,
+): Promise<ImageFrameRecord> => {
     ensureConnected();
     await ensureWebSocket();
     const waitForFrame = createPendingRequest(
@@ -419,7 +478,7 @@ const triggerOnceAndWaitForFrame = async (timeoutMs = 20000): Promise<ImageFrame
     try {
         // 同步响应只表示触发已成功登记并发送；最终结果仍由image_frame或
         // capture_failed WebSocket事件完成pendingFrame。
-        await jniApi.sendTriggerOnce();
+        await jniApi.sendTriggerOnce(options);
     } catch (error) {
         pendingFrame = rejectPendingRequest(
             pendingFrame,
@@ -495,6 +554,7 @@ export const jniBridgeService = {
     triggerOnceAndWaitForFrame,
     queryStatusAndWait,
     sendFullConfigAndWait,
+    processImage,
     deleteImage,
     clearImages,
 };

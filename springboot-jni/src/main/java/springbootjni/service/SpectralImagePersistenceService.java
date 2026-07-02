@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 import springbootjni.dto.jni.ImageFrameResponse;
 import springbootjni.service.SpectralImageQualityDispositionService.QualityDispositionResult;
 import springbootjni.service.SpectralImageQualityAnalysisService.QualityAnalysisResult;
+import springbootjni.service.SpectralImageProcessingService.ProcessingResult;
 
 import javax.imageio.ImageIO;
 import javax.annotation.PostConstruct;
@@ -59,6 +60,7 @@ public class SpectralImagePersistenceService {
     private final ObjectMapper objectMapper;
     private final SpectralImageQualityAnalysisService qualityAnalysisService;
     private final SpectralImageQualityDispositionService qualityDispositionService;
+    private final SpectralImageProcessingService imageProcessingService;
 
     @Value("${spectral.storage.root:D:/GraduationProject/spectral-images}")
     private String storageRoot;
@@ -121,6 +123,7 @@ public class SpectralImagePersistenceService {
                                                   short[] pixels16,
                                                   byte[] pixels8,
                                                   boolean verifyCrc,
+                                                  boolean autoProcess,
                                                   long elapsedMs) {
         validateFrameBuffers(width, height, pixels16, pixels8);
 
@@ -158,6 +161,7 @@ public class SpectralImagePersistenceService {
 
             Map<String, Object> details = new LinkedHashMap<>();
             details.put("verifyCrc", verifyCrc);
+            details.put("autoProcess", autoProcess);
             details.put("rawHighBitsChecked", true);
             details.put("protocolChecks", "magic,version,headerLength,dimensions,pixelFormat,payloadLength");
 
@@ -187,6 +191,25 @@ public class SpectralImagePersistenceService {
             QualityAnalysisResult quality = qualityAnalysisService.analyze(width, height, pixels16);
             QualityDispositionResult disposition = qualityDispositionService.decide(quality);
             saveQualityAnalysis(imageId, quality, disposition);
+            SavedProcessingResult processing = null;
+            if (autoProcess) {
+                processing = tryProcessAndSaveImage(
+                        captureId,
+                        imageId,
+                        width,
+                        height,
+                        frameDirectory,
+                        pixels16,
+                        quality,
+                        disposition);
+                if (processing == null) {
+                    saveSkippedProcessingLog(captureId, imageId, disposition);
+                    processing = new SavedProcessingResult(
+                            "SKIPPED",
+                            "自动处理已跳过：当前图片没有可自动修复动作，或无需修复。",
+                            skippedProcessingDetails(disposition));
+                }
+            }
 
             jdbcTemplate.update(
                     "UPDATE t_spectral_capture SET capture_status=?, completed_at=CURRENT_TIMESTAMP, " +
@@ -207,7 +230,8 @@ public class SpectralImagePersistenceService {
                     true,
                     "OK",
                     quality,
-                    disposition);
+                    disposition,
+                    processing);
         } catch (RuntimeException | IOException ex) {
             deleteDirectoryQuietly(frameDirectory);
             throw new IllegalStateException("保存光谱图像失败: " + ex.getMessage(), ex);
@@ -270,6 +294,153 @@ public class SpectralImagePersistenceService {
     }
 
     /**
+     * 按质量处置建议执行当前阶段可安全执行的图像处理。
+     *
+     * <p>处理失败不回滚原图保存：原始 RAW、预览图、基础质量分析和处置建议仍然有效。
+     * 失败信息会写入 t_image_action_log，便于后续定位算法或文件系统问题。</p>
+     */
+    private SavedProcessingResult tryProcessAndSaveImage(long captureId,
+                                                         Long imageId,
+                                                         int width,
+                                                         int height,
+                                                         Path frameDirectory,
+                                                         short[] pixels16,
+                                                         QualityAnalysisResult quality,
+                                                         QualityDispositionResult disposition) {
+        try {
+            ProcessingResult result = imageProcessingService.processIfRecommended(
+                    width,
+                    height,
+                    pixels16,
+                    quality,
+                    disposition);
+            if (result == null) {
+                return null;
+            }
+
+            Path processedDirectory = frameDirectory.resolve("processed");
+            Files.createDirectories(processedDirectory);
+            Path processedRawFile = processedDirectory.resolve("raw16le.bin");
+            Path processedPreviewFile = processedDirectory.resolve("preview.png");
+            Files.write(processedRawFile, toLittleEndianRawBytes(result.getProcessedPixels16()));
+            writePreviewPng(width, height, toPreviewBytes(result.getProcessedPixels16()), processedPreviewFile);
+
+            String processedRawUri = toStorageUri(processedRawFile);
+            String processedPreviewUri = toStorageUri(processedPreviewFile);
+            Map<String, Object> details = buildProcessingDetails(result, processedRawUri, processedPreviewUri);
+
+            jdbcTemplate.update(
+                    "UPDATE t_spectral_image SET processed_storage_uri=? WHERE id=?",
+                    processedPreviewUri,
+                    imageId);
+            jdbcTemplate.update(
+                    "INSERT INTO t_image_action_log " +
+                            "(capture_id, image_id, action_type, action_status, reason, output_storage_uri, details) " +
+                            "VALUES (?, ?, 'CORRECT', 'SUCCESS', ?, ?, CAST(? AS jsonb))",
+                    captureId,
+                    imageId,
+                    result.getSummaryMessage(),
+                    processedPreviewUri,
+                    toJson(details));
+
+            return new SavedProcessingResult(result, processedPreviewFile, details);
+        } catch (RuntimeException | IOException ex) {
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("processingVersion", SpectralImageProcessingService.PROCESSING_VERSION);
+            details.put("errorType", ex.getClass().getSimpleName());
+            details.put("errorMessage", ex.getMessage());
+            jdbcTemplate.update(
+                    "INSERT INTO t_image_action_log " +
+                            "(capture_id, image_id, action_type, action_status, reason, details) " +
+                            "VALUES (?, ?, 'CORRECT', 'FAILED', ?, CAST(? AS jsonb))",
+                    captureId,
+                    imageId,
+                    "图像处理失败: " + ex.getMessage(),
+                    toJson(details));
+            return new SavedProcessingResult(
+                    "FAILED",
+                    "图像处理失败: " + ex.getMessage(),
+                    details);
+        }
+    }
+
+    private Map<String, Object> buildProcessingDetails(ProcessingResult result,
+                                                       String processedRawUri,
+                                                       String processedPreviewUri) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("processingVersion", SpectralImageProcessingService.PROCESSING_VERSION);
+        details.put("processingStatus", result.getProcessingStatus());
+        details.put("executedActions", result.getExecutedActions());
+        details.put("skippedActionCodes", result.getSkippedActionCodes());
+        details.put("correctedRowCount", result.getCorrectedRowCount());
+        details.put("correctedColumnCount", result.getCorrectedColumnCount());
+        details.put("correctedBadPixelCount", result.getCorrectedBadPixelCount());
+        details.put("processedRawStorageUri", processedRawUri);
+        details.put("processedPreviewStorageUri", processedPreviewUri);
+        details.put("processedQuality", qualityToMap(result.getProcessedQuality()));
+        details.put("processedDisposition", dispositionToMap(result.getProcessedDisposition()));
+        return details;
+    }
+
+    private void saveSkippedProcessingLog(Long captureId,
+                                          Long imageId,
+                                          QualityDispositionResult disposition) {
+        Map<String, Object> details = skippedProcessingDetails(disposition);
+        jdbcTemplate.update(
+                "INSERT INTO t_image_action_log " +
+                        "(capture_id, image_id, action_type, action_status, reason, details) " +
+                        "VALUES (?, ?, 'CORRECT', 'SUCCESS', ?, CAST(? AS jsonb))",
+                captureId,
+                imageId,
+                "当前版本没有可执行的自动修复动作，或无需修复。",
+                toJson(details));
+    }
+
+    private Map<String, Object> skippedProcessingDetails(QualityDispositionResult disposition) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("processingVersion", SpectralImageProcessingService.PROCESSING_VERSION);
+        details.put("processingStatus", "SKIPPED");
+        details.put("recommendedActions", disposition == null
+                ? Collections.emptyList()
+                : disposition.getRecommendedActions());
+        details.put("reason", "当前版本没有可执行的自动修复动作，或无需修复。");
+        return details;
+    }
+
+    private Map<String, Object> qualityToMap(QualityAnalysisResult quality) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        if (quality == null) {
+            return map;
+        }
+        map.put("qualityStatus", quality.getQualityStatus());
+        map.put("summaryMessage", quality.getSummaryMessage());
+        map.put("pixelMin", quality.getPixelMin());
+        map.put("pixelMax", quality.getPixelMax());
+        map.put("pixelMean", quality.getPixelMean());
+        map.put("pixelStddev", quality.getPixelStddev());
+        map.put("blackPixelRatio", quality.getBlackPixelRatio());
+        map.put("saturationPixelRatio", quality.getSaturationPixelRatio());
+        map.put("abnormalRowCount", quality.getAbnormalRowCount());
+        map.put("abnormalColumnCount", quality.getAbnormalColumnCount());
+        map.put("badPixelCount", quality.getBadPixelCount());
+        map.put("details", quality.getDetails());
+        return map;
+    }
+
+    private Map<String, Object> dispositionToMap(QualityDispositionResult disposition) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        if (disposition == null) {
+            return map;
+        }
+        map.put("dispositionStatus", disposition.getDispositionStatus());
+        map.put("usableForSpectral", disposition.isUsableForSpectral());
+        map.put("summaryMessage", disposition.getSummaryMessage());
+        map.put("recommendedActions", disposition.getRecommendedActions());
+        map.put("reasonCodes", disposition.getReasonCodes());
+        return map;
+    }
+
+    /**
      * 保存没有生成有效图片的失败结果，例如FPGA错误、接收超时或CRC不匹配。
      */
     @Transactional
@@ -310,15 +481,25 @@ public class SpectralImagePersistenceService {
         List<StoredImageRow> rows = jdbcTemplate.query(
                 "SELECT i.id AS image_id, c.id AS capture_id, c.request_id, i.received_at, " +
                         "i.width, i.height, i.payload_length, i.pixel_format, i.preview_storage_uri, " +
+                        "i.processed_storage_uri, " +
                         "ia.passed, ia.result_code, qa.quality_status, qa.pixel_min, qa.pixel_max, " +
                         "qa.pixel_mean, qa.pixel_stddev, qa.black_pixel_ratio, qa.saturation_pixel_ratio, " +
                         "qa.abnormal_row_count, qa.abnormal_column_count, qa.bad_pixel_count, " +
                         "qa.disposition_status, qa.usable_for_spectral, qa.disposition_message, " +
-                        "qa.recommended_actions, qa.details AS quality_details " +
+                        "qa.recommended_actions, qa.details AS quality_details, " +
+                        "COALESCE(pa.details->>'processingStatus', pa.action_status) AS processing_status, " +
+                        "pa.reason AS processing_message, " +
+                        "pa.details AS processing_details " +
                         "FROM t_spectral_capture c " +
                         "JOIN t_spectral_image i ON i.capture_id=c.id " +
                         "LEFT JOIN t_image_integrity_analysis ia ON ia.capture_id=c.id " +
                         "LEFT JOIN t_image_quality_analysis qa ON qa.image_id=i.id " +
+                        "LEFT JOIN LATERAL ( " +
+                        "    SELECT al.action_status, al.reason, al.details " +
+                        "    FROM t_image_action_log al " +
+                        "    WHERE al.image_id=i.id AND al.action_type='CORRECT' " +
+                        "    ORDER BY al.created_at DESC LIMIT 1 " +
+                        ") pa ON TRUE " +
                         "WHERE c.user_id=? ORDER BY i.received_at DESC LIMIT ?",
                 (resultSet, rowNum) -> mapStoredImageRow(resultSet),
                 userId,
@@ -329,6 +510,69 @@ public class SpectralImagePersistenceService {
             responses.add(toResponse(row));
         }
         return responses;
+    }
+
+    /**
+     * 对历史图片手动执行当前阶段可用的图像处理。
+     *
+     * <p>该方法只处理当前登录用户自己的图片；处理时重新读取原始 RAW16，
+     * 因而不会受到预览图或前端显示压缩的影响。</p>
+     */
+    @Transactional
+    public ImageFrameResponse processImage(Long userId, long imageId) {
+        List<ProcessSourceRow> sources = jdbcTemplate.query(
+                "SELECT i.id AS image_id, i.capture_id, i.width, i.height, i.raw_storage_uri, " +
+                        "i.processed_storage_uri " +
+                        "FROM t_spectral_image i JOIN t_spectral_capture c ON c.id=i.capture_id " +
+                        "WHERE i.id=? AND c.user_id=?",
+                (resultSet, rowNum) -> {
+                    ProcessSourceRow row = new ProcessSourceRow();
+                    row.imageId = resultSet.getLong("image_id");
+                    row.captureId = resultSet.getLong("capture_id");
+                    row.width = resultSet.getInt("width");
+                    row.height = resultSet.getInt("height");
+                    row.rawStorageUri = resultSet.getString("raw_storage_uri");
+                    row.processedStorageUri = resultSet.getString("processed_storage_uri");
+                    return row;
+                },
+                imageId,
+                userId);
+        if (sources.isEmpty()) {
+            throw new IllegalArgumentException("图像不存在或不属于当前用户");
+        }
+
+        ProcessSourceRow source = sources.get(0);
+        if (source.processedStorageUri != null && !source.processedStorageUri.trim().isEmpty()) {
+            throw new IllegalStateException("当前图片已完成图像处理，无需重复处理");
+        }
+        Path rawFile = resolveStorageUri(source.rawStorageUri);
+        try {
+            short[] pixels16 = readRaw16Le(rawFile, source.width * source.height);
+            QualityAnalysisResult quality = qualityAnalysisService.analyze(source.width, source.height, pixels16);
+            QualityDispositionResult disposition = qualityDispositionService.decide(quality);
+            saveQualityAnalysis(source.imageId, quality, disposition);
+            SavedProcessingResult processing = tryProcessAndSaveImage(
+                    source.captureId,
+                    source.imageId,
+                    source.width,
+                    source.height,
+                    rawFile.getParent(),
+                    pixels16,
+                    quality,
+                    disposition);
+            if (processing == null) {
+                saveSkippedProcessingLog(source.captureId, source.imageId, disposition);
+            }
+        } catch (IOException ex) {
+            throw new IllegalStateException("读取原始RAW图像失败: " + ex.getMessage(), ex);
+        }
+
+        for (ImageFrameResponse response : listImages(userId)) {
+            if (response.getId() != null && response.getId() == imageId) {
+                return response;
+            }
+        }
+        throw new IllegalStateException("图像处理后未能重新加载记录");
     }
 
     /**
@@ -402,6 +646,19 @@ public class SpectralImagePersistenceService {
         return buffer.array();
     }
 
+    private short[] readRaw16Le(Path rawFile, int expectedPixels) throws IOException {
+        byte[] bytes = Files.readAllBytes(rawFile);
+        if (bytes.length != expectedPixels * Short.BYTES) {
+            throw new IOException("RAW文件长度与图像尺寸不一致");
+        }
+        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        short[] pixels16 = new short[expectedPixels];
+        for (int index = 0; index < expectedPixels; index++) {
+            pixels16[index] = (short) (buffer.getShort() & 0x0FFF);
+        }
+        return pixels16;
+    }
+
     private void writePreviewPng(int width, int height, byte[] pixels8, Path target) throws IOException {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);
         byte[] targetBuffer = ((DataBufferByte) image.getRaster().getDataBuffer()).getData();
@@ -409,6 +666,15 @@ public class SpectralImagePersistenceService {
         if (!ImageIO.write(image, "png", target.toFile())) {
             throw new IOException("当前JRE没有可用的PNG编码器");
         }
+    }
+
+    private byte[] toPreviewBytes(short[] pixels16) {
+        byte[] pixels8 = new byte[pixels16.length];
+        for (int index = 0; index < pixels16.length; index++) {
+            int raw12 = pixels16[index] & 0x0FFF;
+            pixels8[index] = (byte) ((raw12 * 255) / 4095);
+        }
+        return pixels8;
     }
 
     private Path buildFrameDirectory(String requestId) {
@@ -472,7 +738,8 @@ public class SpectralImagePersistenceService {
                                               Boolean integrityPassed,
                                               String integrityResultCode,
                                               QualityAnalysisResult quality,
-                                              QualityDispositionResult disposition) {
+                                              QualityDispositionResult disposition,
+                                              SavedProcessingResult processing) {
         ImageFrameResponse response = new ImageFrameResponse();
         response.setId(imageId);
         response.setCaptureId(captureId);
@@ -500,6 +767,7 @@ public class SpectralImagePersistenceService {
             response.setBadPixelCount(quality.getBadPixelCount());
             response.setQualitySummaryMessage(quality.getSummaryMessage());
             response.setQualityDetails(quality.getDetails());
+            response.setOriginalQualitySnapshot(qualityToMap(quality));
         }
         if (disposition != null) {
             response.setDispositionStatus(disposition.getDispositionStatus());
@@ -508,7 +776,115 @@ public class SpectralImagePersistenceService {
             response.setRecommendedActions(disposition.getRecommendedActions());
             response.setDispositionReasonCodes(disposition.getReasonCodes());
         }
+        applyProcessingResponse(response, processing);
         return response;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void applyProcessingResponse(ImageFrameResponse response, SavedProcessingResult processing) {
+        if (processing == null) {
+            return;
+        }
+        response.setProcessingStatus(processing.processingStatus);
+        response.setProcessingMessage(processing.processingMessage);
+        if (processing.processedPreviewFile != null) {
+            response.setProcessedImageDataUrl(encodePreviewDataUrl(processing.processedPreviewFile));
+        }
+
+        Map<String, Object> details = processing.processingDetails == null
+                ? Collections.<String, Object>emptyMap()
+                : processing.processingDetails;
+        response.setExecutedProcessingActions(extractMapList(details.get("executedActions")));
+
+        Object processedQualityValue = details.get("processedQuality");
+        if (processedQualityValue instanceof Map) {
+            Map<String, Object> processedQuality = (Map<String, Object>) processedQualityValue;
+            response.setProcessedQualityStatus(asNullableString(processedQuality.get("qualityStatus")));
+            response.setProcessedPixelMin(asNullableInteger(processedQuality.get("pixelMin")));
+            response.setProcessedPixelMax(asNullableInteger(processedQuality.get("pixelMax")));
+            response.setProcessedPixelMean(asNullableDouble(processedQuality.get("pixelMean")));
+            response.setProcessedPixelStddev(asNullableDouble(processedQuality.get("pixelStddev")));
+            response.setProcessedBlackPixelRatio(asNullableDouble(processedQuality.get("blackPixelRatio")));
+            response.setProcessedSaturationPixelRatio(asNullableDouble(processedQuality.get("saturationPixelRatio")));
+            response.setProcessedAbnormalRowCount(asNullableInteger(processedQuality.get("abnormalRowCount")));
+            response.setProcessedAbnormalColumnCount(asNullableInteger(processedQuality.get("abnormalColumnCount")));
+            response.setProcessedBadPixelCount(asNullableInteger(processedQuality.get("badPixelCount")));
+            response.setProcessedQualitySummaryMessage(asNullableString(processedQuality.get("summaryMessage")));
+            response.setProcessedQualityDetails(asNullableMap(processedQuality.get("details")));
+            response.setProcessedQualitySnapshot(new LinkedHashMap<>(processedQuality));
+        }
+
+        Object processedDispositionValue = details.get("processedDisposition");
+        if (processedDispositionValue instanceof Map) {
+            Map<String, Object> processedDisposition = (Map<String, Object>) processedDispositionValue;
+            response.setProcessedDispositionStatus(asNullableString(processedDisposition.get("dispositionStatus")));
+            response.setProcessedUsableForSpectral(asNullableBoolean(processedDisposition.get("usableForSpectral")));
+            response.setProcessedDispositionMessage(asNullableString(processedDisposition.get("summaryMessage")));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> extractMapList(Object value) {
+        if (!(value instanceof List)) {
+            return Collections.emptyList();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object item : (List<?>) value) {
+            if (item instanceof Map) {
+                result.add(new LinkedHashMap<>((Map<String, Object>) item));
+            }
+        }
+        return result;
+    }
+
+    private String asNullableString(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private Boolean asNullableBoolean(Object value) {
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        if (value == null) {
+            return null;
+        }
+        return Boolean.valueOf(String.valueOf(value));
+    }
+
+    private Integer asNullableInteger(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private Double asNullableDouble(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).doubleValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Double.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> asNullableMap(Object value) {
+        if (value instanceof Map) {
+            return new LinkedHashMap<>((Map<String, Object>) value);
+        }
+        return null;
     }
 
     private StoredImageRow mapStoredImageRow(ResultSet resultSet) throws SQLException {
@@ -522,6 +898,7 @@ public class SpectralImagePersistenceService {
         row.payloadLength = resultSet.getLong("payload_length");
         row.pixelFormat = resultSet.getString("pixel_format");
         row.previewStorageUri = resultSet.getString("preview_storage_uri");
+        row.processedStorageUri = resultSet.getString("processed_storage_uri");
         row.integrityPassed = (Boolean) resultSet.getObject("passed");
         row.integrityResultCode = resultSet.getString("result_code");
         row.qualityStatus = resultSet.getString("quality_status");
@@ -540,6 +917,9 @@ public class SpectralImagePersistenceService {
         row.recommendedActionsPayload = parseJsonMap(resultSet.getString("recommended_actions"));
         row.qualityDetails = parseJsonMap(resultSet.getString("quality_details"));
         row.qualitySummaryMessage = buildQualitySummaryMessage(row.qualityStatus, row.qualityDetails);
+        row.processingStatus = resultSet.getString("processing_status");
+        row.processingMessage = resultSet.getString("processing_message");
+        row.processingDetails = parseJsonMap(resultSet.getString("processing_details"));
         return row;
     }
 
@@ -602,6 +982,8 @@ public class SpectralImagePersistenceService {
         if (quality != null && row.needsDispositionRecompute()) {
             disposition = qualityDispositionService.decide(quality);
         }
+        SavedProcessingResult processing = row.toSavedProcessingResult(
+                row.processedStorageUri == null ? null : resolveStorageUri(row.processedStorageUri));
         return buildResponse(
                 row.imageId,
                 row.captureId,
@@ -614,7 +996,8 @@ public class SpectralImagePersistenceService {
                 row.integrityPassed,
                 row.integrityResultCode,
                 quality,
-                disposition);
+                disposition,
+                processing);
     }
 
     private String firstNonNullUri(ResultSet resultSet) throws SQLException {
@@ -660,6 +1043,50 @@ public class SpectralImagePersistenceService {
         }
     }
 
+    private static final class SavedProcessingResult {
+        private final String processingStatus;
+        private final String processingMessage;
+        private final Map<String, Object> processingDetails;
+        private final Path processedPreviewFile;
+
+        private SavedProcessingResult(ProcessingResult result,
+                                      Path processedPreviewFile,
+                                      Map<String, Object> processingDetails) {
+            this(
+                    result.getProcessingStatus(),
+                    result.getSummaryMessage(),
+                    processingDetails,
+                    processedPreviewFile);
+        }
+
+        private SavedProcessingResult(String processingStatus,
+                                      String processingMessage,
+                                      Map<String, Object> processingDetails) {
+            this(processingStatus, processingMessage, processingDetails, null);
+        }
+
+        private SavedProcessingResult(String processingStatus,
+                                      String processingMessage,
+                                      Map<String, Object> processingDetails,
+                                      Path processedPreviewFile) {
+            this.processingStatus = processingStatus;
+            this.processingMessage = processingMessage;
+            this.processingDetails = processingDetails == null
+                    ? Collections.emptyMap()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(processingDetails));
+            this.processedPreviewFile = processedPreviewFile;
+        }
+    }
+
+    private static final class ProcessSourceRow {
+        private Long imageId;
+        private Long captureId;
+        private int width;
+        private int height;
+        private String rawStorageUri;
+        private String processedStorageUri;
+    }
+
     private static final class StoredImageRow {
         private Long imageId;
         private Long captureId;
@@ -670,6 +1097,7 @@ public class SpectralImagePersistenceService {
         private long payloadLength;
         private String pixelFormat;
         private String previewStorageUri;
+        private String processedStorageUri;
         private Boolean integrityPassed;
         private String integrityResultCode;
         private String qualityStatus;
@@ -688,6 +1116,9 @@ public class SpectralImagePersistenceService {
         private Boolean usableForSpectral;
         private String dispositionMessage;
         private Map<String, Object> recommendedActionsPayload = Collections.emptyMap();
+        private String processingStatus;
+        private String processingMessage;
+        private Map<String, Object> processingDetails = Collections.emptyMap();
 
         private QualityAnalysisResult toQualityAnalysisResult() {
             if (qualityStatus == null) {
@@ -729,6 +1160,17 @@ public class SpectralImagePersistenceService {
                     extractActionMaps(payload),
                     extractStringList(payload.get("reasonCodes")),
                     payload);
+        }
+
+        private SavedProcessingResult toSavedProcessingResult(Path processedPreviewFile) {
+            if (processingStatus == null && processedPreviewFile == null) {
+                return null;
+            }
+            return new SavedProcessingResult(
+                    processingStatus == null ? "PROCESSED" : processingStatus,
+                    processingMessage,
+                    processingDetails == null ? Collections.emptyMap() : processingDetails,
+                    processedPreviewFile);
         }
 
         @SuppressWarnings("unchecked")

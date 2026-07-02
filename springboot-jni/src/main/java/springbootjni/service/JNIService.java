@@ -16,7 +16,7 @@ public interface JNIService {
 
     void sendReset();
 
-    TriggerCaptureResponse sendTriggerOnce(Long userId);
+    TriggerCaptureResponse sendTriggerOnce(Long userId, boolean autoProcess);
 
     void sendQueryStatus();
 
@@ -31,6 +31,8 @@ public interface JNIService {
     void handleTransportError(String channel, String message);
 
     List<ImageFrameResponse> listImages(Long userId);
+
+    ImageFrameResponse processImage(Long userId, long imageId);
 
     boolean deleteImage(Long userId, long imageId);
 
