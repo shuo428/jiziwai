@@ -130,6 +130,88 @@ public class SpectralImageProcessingService {
                 correctedBadPixelCount);
     }
 
+    /**
+     * 使用多帧检测得到的缺陷地图处理单张图像。
+     *
+     * <p>多帧检测负责确认“哪些坐标持续异常”，本方法负责对当前图像执行实际修复。
+     * 原始数组不会被修改；修复后仍然重新走单帧质量分析和处置判断。</p>
+     */
+    public ProcessingResult processWithMultiFrameDefectMap(
+            int width,
+            int height,
+            short[] originalPixels16,
+            SpectralMultiFrameQualityAnalysisService.DefectMap defectMap) {
+        if (defectMap == null
+                || defectMap.getWidth() != width
+                || defectMap.getHeight() != height) {
+            throw new IllegalArgumentException("多帧缺陷地图与当前图像尺寸不一致");
+        }
+
+        short[] processedPixels16 = Arrays.copyOf(originalPixels16, originalPixels16.length);
+        List<Map<String, Object>> executedActions = new ArrayList<>();
+        int correctedRowCount = 0;
+        int correctedColumnCount = 0;
+        int correctedBadPixelCount = 0;
+
+        if (!defectMap.getAbnormalRows().isEmpty() || !defectMap.getAbnormalColumns().isEmpty()) {
+            LineCorrectionResult lineResult = correctAbnormalLines(
+                    width,
+                    height,
+                    processedPixels16,
+                    defectMap.getAbnormalRows(),
+                    defectMap.getAbnormalColumns());
+            correctedRowCount = lineResult.correctedRowCount;
+            correctedColumnCount = lineResult.correctedColumnCount;
+            if (lineResult.hasCorrection()) {
+                executedActions.add(actionSummary(
+                        "MULTI_FRAME_ABNORMAL_LINE_CORRECTION",
+                        "多帧异常行/列校正",
+                        lineResult.correctedPixelCount,
+                        "根据多帧持续异常投票结果，用相邻有效行/列同位置像素校正。"));
+            }
+        }
+
+        if (!defectMap.getBadPixelIndexes().isEmpty()) {
+            correctedBadPixelCount = correctBadPixelIndexes(
+                    width,
+                    height,
+                    processedPixels16,
+                    defectMap.getBadPixelIndexes());
+            if (correctedBadPixelCount > 0) {
+                executedActions.add(actionSummary(
+                        "MULTI_FRAME_BAD_PIXEL_INTERPOLATION",
+                        "多帧坏点插值修复",
+                        correctedBadPixelCount,
+                        "根据多帧持续异常投票结果，用当前图像8邻域中值插值。"));
+            }
+        }
+
+        if (executedActions.isEmpty()) {
+            return null;
+        }
+
+        QualityAnalysisResult processedQuality = qualityAnalysisService.analyze(
+                width,
+                height,
+                processedPixels16);
+        QualityDispositionResult processedDisposition = qualityDispositionService.decide(processedQuality);
+        String summary = "多帧缺陷地图修复完成：坏点 " + correctedBadPixelCount
+                + " 个，异常行 " + correctedRowCount + " 条，异常列 " + correctedColumnCount + " 条；"
+                + processedQuality.getSummaryMessage();
+
+        return new ProcessingResult(
+                "PROCESSED",
+                summary,
+                processedPixels16,
+                executedActions,
+                Collections.<String>emptyList(),
+                processedQuality,
+                processedDisposition,
+                correctedRowCount,
+                correctedColumnCount,
+                correctedBadPixelCount);
+    }
+
     private Set<String> executableProcessActionCodes(QualityDispositionResult disposition) {
         Set<String> codes = new HashSet<>();
         for (Map<String, Object> action : disposition.getRecommendedActions()) {
@@ -249,6 +331,31 @@ public class SpectralImageProcessingService {
             pixels16[replacement.y * width + replacement.x] = (short) replacement.value;
         }
         return new BadPixelCorrectionResult(replacements.size(), samples);
+    }
+
+    private int correctBadPixelIndexes(int width,
+                                      int height,
+                                      short[] pixels16,
+                                      List<Integer> indexes) {
+        List<PixelReplacement> replacements = new ArrayList<>();
+        int[] neighbors = new int[8];
+        for (Integer index : indexes) {
+            if (index == null || index < width + 1 || index >= pixels16.length - width - 1) {
+                continue;
+            }
+            int x = index % width;
+            int y = index / width;
+            if (x <= 0 || x >= width - 1 || y <= 0 || y >= height - 1) {
+                continue;
+            }
+            fillEightNeighbors(pixels16, width, x, y, neighbors);
+            int replacement = clampToRaw12((int) Math.round(median(neighbors)));
+            replacements.add(new PixelReplacement(x, y, replacement));
+        }
+        for (PixelReplacement replacement : replacements) {
+            pixels16[replacement.y * width + replacement.x] = (short) replacement.value;
+        }
+        return replacements.size();
     }
 
     @SuppressWarnings("unchecked")

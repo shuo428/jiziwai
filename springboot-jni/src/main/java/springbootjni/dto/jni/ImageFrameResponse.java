@@ -39,6 +39,10 @@ public class ImageFrameResponse {
     private Integer badPixelCount;
     private String qualitySummaryMessage;
     private Map<String, Object> qualityDetails;
+    /** 原始 RAW 的硬性检查快照：黑场、饱和和动态范围，不受暗场/平场校准影响。 */
+    private Map<String, Object> rawHardQualitySnapshot;
+    /** 全局校准实际应用后得到的完整质量分析快照；未应用时为 null。 */
+    private Map<String, Object> calibratedQualitySnapshot;
     private Map<String, Object> originalQualitySnapshot;
     private String dispositionStatus;
     private Boolean usableForSpectral;

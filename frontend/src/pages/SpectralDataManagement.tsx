@@ -1,12 +1,20 @@
 import React, { useEffect, useState } from "react";
-import { Button, Card, Empty, Modal, Space, Spin, Table, Tag, Typography } from "antd";
+import { Button, Card, Checkbox, Empty, InputNumber, Modal, Select, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Activity, Clock, Database, Eye, Image as ImageIcon, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { jniBridgeService } from "../service/jniBridgeService";
+import ImagePixelDataViewer from "../components/ImagePixelDataViewer";
+import SpectrumCurve from "../components/SpectrumCurve";
 import { useJNIStore } from "../store/jniStore";
-import type { ImageFrameRecord } from "../types/jni";
+import type {
+    CalibrationGlobalSettingsRecord,
+    ImageFrameRecord,
+    SpectrumExtractionRecord,
+    SpectrumExtractionRequest,
+    SpectrumRoi,
+} from "../types/jni";
 
 const { Title, Text } = Typography;
 
@@ -68,12 +76,36 @@ const stringFromRecord = (record: Record<string, unknown> | null | undefined, ke
     return typeof value === "string" ? value : null;
 };
 
+const booleanFromRecord = (record: Record<string, unknown> | null | undefined, key: string): boolean | null => {
+    const value = record?.[key];
+    return typeof value === "boolean" ? value : null;
+};
+
 const objectFromRecord = (
     record: Record<string, unknown> | null | undefined,
     key: string,
 ): Record<string, unknown> | null => {
     const value = record?.[key];
     return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+};
+
+const calibrationReferenceLabel = (
+    record: Record<string, unknown> | null | undefined,
+    labelKey: string,
+    sessionNumberKey: string,
+    idKey: string,
+    prefix: "D" | "F",
+): string => {
+    const label = stringFromRecord(record, labelKey);
+    if (label) {
+        return label;
+    }
+    const sessionNumber = numberFromRecord(record, sessionNumberKey);
+    if (sessionNumber !== null) {
+        return `${prefix}-${String(sessionNumber).padStart(3, "0")}`;
+    }
+    const id = numberFromRecord(record, idKey);
+    return id === null ? "-" : `ID ${id}`;
 };
 
 const metricColor = (status: MetricStatus): string => {
@@ -119,6 +151,38 @@ const dispositionStatusLabel = (status?: string | null): string => {
         return "拒绝使用";
     }
     return status || "人工复核";
+};
+
+const canExtractSpectrum = (frame: ImageFrameRecord | null, useProcessedSource: boolean): boolean =>
+    useProcessedSource ? frame?.processedQualityStatus === "PASS" : frame?.qualityStatus === "PASS";
+
+const getSpectrumExtractionDisabledReason = (
+    frame: ImageFrameRecord | null,
+    useProcessedSource: boolean,
+): string | null => {
+    if (!frame) {
+        return "请选择一张图像。";
+    }
+    if (useProcessedSource && !frame.processedQualityStatus) {
+        return "当前查看的是处理后结果，但这张图像还没有处理后复检结果。";
+    }
+    if (!canExtractSpectrum(frame, useProcessedSource)) {
+        return useProcessedSource
+            ? "当前查看的是处理后结果，只有处理后复检质量为PASS时才能提取一维光谱。"
+            : "当前查看的是处理前原图，只有原图质量为PASS时才能提取一维光谱。";
+    }
+    return null;
+};
+
+const sanitizeRoiDraft = (roi: Partial<SpectrumRoi>): SpectrumExtractionRequest["roi"] => {
+    const result: Partial<SpectrumRoi> = {};
+    (["xStart", "xEnd", "yStart", "yEnd"] as const).forEach((key) => {
+        const value = roi[key];
+        if (typeof value === "number" && Number.isFinite(value)) {
+            result[key] = Math.trunc(value);
+        }
+    });
+    return Object.keys(result).length > 0 ? result : undefined;
 };
 
 const actionColor = (severity?: string | null): string => {
@@ -477,6 +541,15 @@ const SpectralDataManagementPage: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [processingImageId, setProcessingImageId] = useState<number | null>(null);
     const [qualityViewMode, setQualityViewMode] = useState<QualityViewMode>("before");
+    const [extractingSpectrumImageId, setExtractingSpectrumImageId] = useState<number | null>(null);
+    const [spectrumAxis, setSpectrumAxis] = useState<"AUTO" | "X" | "Y">("AUTO");
+    const [spectrumIntegrationMethod, setSpectrumIntegrationMethod] = useState<"MEAN" | "SUM">("MEAN");
+    const [spectrumRectifyTilt, setSpectrumRectifyTilt] = useState(true);
+    const [spectrumMaxShiftPixels, setSpectrumMaxShiftPixels] = useState<number | null>(null);
+    const [spectrumRoi, setSpectrumRoi] = useState<Partial<SpectrumRoi>>({});
+    const [spectrumResult, setSpectrumResult] = useState<SpectrumExtractionRecord | null>(null);
+    const [globalCalibrationSettings, setGlobalCalibrationSettings] =
+        useState<CalibrationGlobalSettingsRecord | null>(null);
 
     /**
      * 历史图片的唯一数据源是后端数据库和服务器文件系统。
@@ -495,10 +568,40 @@ const SpectralDataManagementPage: React.FC = () => {
 
     useEffect(() => {
         loadHistory();
+        jniBridgeService
+            .getCalibrationGlobalSettings()
+            .then((settings) => {
+                setGlobalCalibrationSettings(settings);
+            })
+            .catch(() => undefined);
     }, []);
 
     useEffect(() => {
         setQualityViewMode(buildProcessedQualitySource(selectedFrame) ? "after" : "before");
+        setSpectrumResult(null);
+        setSpectrumRoi({});
+        setSpectrumAxis("AUTO");
+        setSpectrumIntegrationMethod("MEAN");
+        setSpectrumRectifyTilt(true);
+        setSpectrumMaxShiftPixels(null);
+        let cancelled = false;
+        if (selectedFrame) {
+            jniBridgeService
+                .getLatestSpectrum(selectedFrame.id)
+                .then((spectrum) => {
+                    if (!cancelled) {
+                        setSpectrumResult(spectrum);
+                    }
+                })
+                .catch(() => {
+                    if (!cancelled) {
+                        setSpectrumResult(null);
+                    }
+                });
+        }
+        return () => {
+            cancelled = true;
+        };
     }, [selectedFrame]);
 
     const handleDelete = (record: ImageFrameRecord) => {
@@ -544,6 +647,35 @@ const SpectralDataManagementPage: React.FC = () => {
         }
     };
 
+    const handleExtractSpectrum = async (record: ImageFrameRecord, useProcessedSource: boolean) => {
+        const disabledReason = getSpectrumExtractionDisabledReason(record, useProcessedSource);
+        if (disabledReason) {
+            toast.warning(disabledReason);
+            return;
+        }
+
+        setExtractingSpectrumImageId(record.id);
+        try {
+            const request: SpectrumExtractionRequest = {
+                sourceMode: useProcessedSource ? "PROCESSED" : "ORIGINAL",
+                wavelengthAxis: spectrumAxis,
+                rectifyTilt: spectrumRectifyTilt,
+                integrationMethod: spectrumIntegrationMethod,
+                roi: sanitizeRoiDraft(spectrumRoi),
+            };
+            if (typeof spectrumMaxShiftPixels === "number") {
+                request.maxShiftPixels = spectrumMaxShiftPixels;
+            }
+            const result = await jniBridgeService.extractSpectrum(record.id, request);
+            setSpectrumResult(result);
+            toast.success(result.summaryMessage || "一维光谱提取完成");
+        } catch (error: any) {
+            toast.error(error?.message || "一维光谱提取失败");
+        } finally {
+            setExtractingSpectrumImageId(null);
+        }
+    };
+
     const handleClearAll = () => {
         Modal.confirm({
             title: "确认清空",
@@ -565,12 +697,49 @@ const SpectralDataManagementPage: React.FC = () => {
     const selectedActiveQualitySource = qualityViewMode === "after" && selectedProcessedQualitySource
         ? selectedProcessedQualitySource
         : selectedOriginalQualitySource;
+    const selectedFrameCalibration = objectFromRecord(selectedFrame?.qualityDetails, "calibration");
+    const selectedCaptureCalibrationEnabled =
+        booleanFromRecord(selectedFrameCalibration, "calibrationPackageEnabled") ??
+        booleanFromRecord(selectedFrameCalibration, "globalCalibrationEnabled");
+    const selectedCaptureCalibrationApplied = booleanFromRecord(selectedFrameCalibration, "calibrationApplied");
+    const selectedCaptureDefectMapEnabled = booleanFromRecord(selectedFrameCalibration, "defectMapEnabled");
+    const selectedCaptureDefectMapApplied = booleanFromRecord(selectedFrameCalibration, "defectMapApplied");
+    const selectedDarkCalibrationLabel = calibrationReferenceLabel(
+        selectedFrameCalibration,
+        "darkCalibrationLabel",
+        "darkSessionNumber",
+        "darkCalibrationId",
+        "D",
+    );
+    const selectedFlatCalibrationLabel = calibrationReferenceLabel(
+        selectedFrameCalibration,
+        "flatCalibrationLabel",
+        "flatSessionNumber",
+        "flatCalibrationId",
+        "F",
+    );
+    const selectedDarkCalibrationId = numberFromRecord(selectedFrameCalibration, "darkCalibrationId");
+    const selectedFlatCalibrationId = numberFromRecord(selectedFrameCalibration, "flatCalibrationId");
     const selectedSummaryUsesProcessed = qualityViewMode === "after" && Boolean(selectedProcessedQualitySource);
     const selectedSummaryQualityStatus = selectedActiveQualitySource?.qualityStatus ?? null;
     const selectedSummaryDispositionStatus = selectedSummaryUsesProcessed
         ? selectedFrame?.processedDispositionStatus ?? null
         : selectedFrame?.dispositionStatus ?? null;
     const selectedSummaryScopeLabel = selectedSummaryUsesProcessed ? "复检" : "原图";
+    const selectedSpectrumSourceMode = selectedSummaryUsesProcessed ? "PROCESSED" : "ORIGINAL";
+    const selectedSpectrumSourceLabel = selectedSummaryUsesProcessed ? "处理后图像" : "处理前原图";
+    const selectedSpectrumDisabledReason = getSpectrumExtractionDisabledReason(
+        selectedFrame,
+        selectedSummaryUsesProcessed,
+    );
+    const selectedSpectrumResult =
+        !selectedSpectrumDisabledReason && spectrumResult?.sourceMode === selectedSpectrumSourceMode
+            ? spectrumResult
+            : null;
+    const selectedSpectrumMismatchMessage =
+        !selectedSpectrumDisabledReason && spectrumResult && spectrumResult.sourceMode !== selectedSpectrumSourceMode
+            ? `当前已有光谱来自${spectrumResult.sourceMode === "PROCESSED" ? "处理后图像" : "处理前原图"}；当前查看的是${selectedSpectrumSourceLabel}，请切换质量视图或重新提取。`
+            : null;
     const selectedCounterpartScopeLabel = selectedSummaryUsesProcessed ? "原图" : "复检";
     const selectedCounterpartQualityStatus = selectedSummaryUsesProcessed
         ? selectedFrame?.qualityStatus ?? null
@@ -615,6 +784,19 @@ const SpectralDataManagementPage: React.FC = () => {
             render: (_, record) => {
                 const displayQuality = getDisplayQualityStatus(record);
                 const displayDisposition = getDisplayDispositionStatus(record);
+                const frameCalibration = objectFromRecord(record.qualityDetails, "calibration");
+                const calibrationEnabled = booleanFromRecord(frameCalibration, "calibrationPackageEnabled");
+                const defectMapEnabled = booleanFromRecord(frameCalibration, "defectMapEnabled");
+                const calibrationTagColor =
+                    calibrationEnabled === true ? (defectMapEnabled ? "cyan" : "blue") : "default";
+                const calibrationTagLabel =
+                    calibrationEnabled === true
+                        ? defectMapEnabled
+                            ? "校准+稳定缺陷"
+                            : "校准已启用"
+                        : calibrationEnabled === false
+                          ? "校准未启用"
+                          : "校准未记录";
                 return (
                     <div>
                         <div className="font-medium text-slate-800">
@@ -625,6 +807,9 @@ const SpectralDataManagementPage: React.FC = () => {
                         </div>
                         <Tag color={record.integrityPassed ? "green" : "red"} className="mt-2">
                             {record.integrityResultCode || "UNKNOWN"}
+                        </Tag>
+                        <Tag color={calibrationTagColor} className="mt-2">
+                            {calibrationTagLabel}
                         </Tag>
                         <Tag color={displayQuality.color} className="mt-2">
                             {displayQuality.prefix} {displayQuality.label}
@@ -705,6 +890,13 @@ const SpectralDataManagementPage: React.FC = () => {
                     </div>
 
                     <div className="flex items-center gap-3">
+                        <Tag color={globalCalibrationSettings?.enabled ? "cyan" : "default"}>
+                            {globalCalibrationSettings?.enabled
+                                ? globalCalibrationSettings.defectMapEnabled
+                                    ? "校准包 + 稳定缺陷修复已启用"
+                                    : "校准包已启用"
+                                : "校准包未启用"}
+                        </Tag>
                         <Button icon={<RefreshCw size={16} />} onClick={loadHistory} loading={loading}>
                             刷新
                         </Button>
@@ -848,6 +1040,21 @@ const SpectralDataManagementPage: React.FC = () => {
                                     </div>
                                 </div>
                                 <div className="min-w-0 rounded bg-white px-2 py-2">
+                                    <Text className="text-xs text-slate-500">采集校准包</Text>
+                                    {selectedCaptureCalibrationEnabled ? (
+                                        <div className="mt-1 flex flex-wrap gap-1">
+                                            <Tag color="blue" className="m-0 max-w-full whitespace-normal break-all">
+                                                暗场 {selectedDarkCalibrationLabel}
+                                            </Tag>
+                                            <Tag color="purple" className="m-0 max-w-full whitespace-normal break-all">
+                                                平场 {selectedFlatCalibrationLabel}
+                                            </Tag>
+                                        </div>
+                                    ) : (
+                                        <div className="font-semibold text-slate-800">未启用</div>
+                                    )}
+                                </div>
+                                <div className="min-w-0 rounded bg-white px-2 py-2">
                                     <Text className="text-xs text-slate-500">{selectedSummaryScopeLabel}质量</Text>
                                     <div>
                                         <Tag
@@ -898,6 +1105,14 @@ const SpectralDataManagementPage: React.FC = () => {
                                     </div>
                                 </div>
                                 <div className="min-w-0 rounded bg-white px-2 py-2">
+                                    <Text className="mb-1 block text-xs text-slate-500">RAW16像素</Text>
+                                    <ImagePixelDataViewer
+                                        frame={selectedFrame}
+                                        defaultSource={selectedSummaryUsesProcessed ? "PROCESSED" : "ORIGINAL"}
+                                        triggerLabel="查看RAW16像素"
+                                    />
+                                </div>
+                                <div className="min-w-0 rounded bg-white px-2 py-2">
                                     <Text className="text-xs text-slate-500">
                                         灰度 min/max/mean（{selectedSummaryScopeLabel}）
                                     </Text>
@@ -940,6 +1155,54 @@ const SpectralDataManagementPage: React.FC = () => {
                                     </div>
                                 </div>
                             </div>
+
+                            {selectedCaptureCalibrationEnabled && (
+                                <div className="rounded-lg border border-cyan-200 bg-cyan-50 p-3">
+                                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                        <Text className="text-sm font-medium text-cyan-800">本帧校准包与缺陷地图审计</Text>
+                                        <div className="flex flex-wrap gap-2">
+                                            <Tag color="cyan" className="m-0">采集时校准包已锁定</Tag>
+                                            <Tag color={selectedCaptureCalibrationApplied ? "green" : "orange"} className="m-0">
+                                                {selectedCaptureCalibrationApplied ? "已应用匹配参考" : "未找到匹配参考"}
+                                            </Tag>
+                                            <Tag
+                                                color={selectedCaptureDefectMapApplied ? "green" : selectedCaptureDefectMapEnabled ? "orange" : "default"}
+                                                className="m-0"
+                                            >
+                                                {selectedCaptureDefectMapApplied
+                                                    ? "已校正稳定缺陷"
+                                                    : selectedCaptureDefectMapEnabled
+                                                      ? "稳定缺陷地图无可校正项"
+                                                      : "未启用稳定缺陷修复"}
+                                            </Tag>
+                                        </div>
+                                    </div>
+                                    <div className="text-xs leading-relaxed text-slate-600">
+                                        {stringFromRecord(selectedFrameCalibration, "message") ||
+                                            "该图像保存了采集当时的校准包快照，后续全局设置变化不会影响此处追溯。"}
+                                    </div>
+                                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                        <div className="rounded-md border border-cyan-100 bg-white/80 p-2.5 text-xs">
+                                            <div className="mb-1 text-slate-500">采集锁定暗场</div>
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Tag color="blue" className="m-0">{selectedDarkCalibrationLabel}</Tag>
+                                                {selectedDarkCalibrationId !== null && (
+                                                    <span className="text-slate-500">数据库ID {selectedDarkCalibrationId}</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className="rounded-md border border-cyan-100 bg-white/80 p-2.5 text-xs">
+                                            <div className="mb-1 text-slate-500">采集锁定平场</div>
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <Tag color="purple" className="m-0">{selectedFlatCalibrationLabel}</Tag>
+                                                {selectedFlatCalibrationId !== null && (
+                                                    <span className="text-slate-500">数据库ID {selectedFlatCalibrationId}</span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
                         <div className="rounded-md border border-slate-200 bg-white p-4">
@@ -1076,6 +1339,158 @@ const SpectralDataManagementPage: React.FC = () => {
                                     )}
                                 </div>
                             )}
+
+                            <div className="mb-4 rounded-lg border border-cyan-200 bg-cyan-50 p-3">
+                                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <Text className="block text-sm font-medium text-cyan-800">一维光谱提取</Text>
+                                        <Text className="text-xs text-cyan-700">
+                                            输出 pixelIndex-intensity；波长 nm 标定留到后续标定模块
+                                        </Text>
+                                    </div>
+                                    <Tag color={selectedSpectrumDisabledReason ? "orange" : "green"} className="m-0">
+                                        {selectedSpectrumDisabledReason ? "等待当前视图PASS" : `可提取·${selectedSpectrumSourceLabel}`}
+                                    </Tag>
+                                </div>
+
+                                <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                                    <div>
+                                        <Text className="mb-1 block text-xs text-slate-500">波长方向</Text>
+                                        <Select
+                                            value={spectrumAxis}
+                                            className="w-full"
+                                            options={[
+                                                { value: "AUTO", label: "自动判断" },
+                                                { value: "X", label: "X 横向" },
+                                                { value: "Y", label: "Y 纵向" },
+                                            ]}
+                                            disabled={Boolean(selectedSpectrumDisabledReason)}
+                                            onChange={(value) => setSpectrumAxis(value as "AUTO" | "X" | "Y")}
+                                        />
+                                    </div>
+                                    <div>
+                                        <Text className="mb-1 block text-xs text-slate-500">积分方式</Text>
+                                        <Select
+                                            value={spectrumIntegrationMethod}
+                                            className="w-full"
+                                            options={[
+                                                { value: "MEAN", label: "平均强度" },
+                                                { value: "SUM", label: "积分总强度" },
+                                            ]}
+                                            disabled={Boolean(selectedSpectrumDisabledReason)}
+                                            onChange={(value) =>
+                                                setSpectrumIntegrationMethod(value as "MEAN" | "SUM")
+                                            }
+                                        />
+                                    </div>
+                                    <div>
+                                        <Text className="mb-1 block text-xs text-slate-500">最大矫正偏移</Text>
+                                        <InputNumber
+                                            value={spectrumMaxShiftPixels}
+                                            min={0}
+                                            max={200}
+                                            className="w-full"
+                                            placeholder="自动"
+                                            addonAfter="px"
+                                            disabled={Boolean(selectedSpectrumDisabledReason)}
+                                            onChange={(value) =>
+                                                setSpectrumMaxShiftPixels(typeof value === "number" ? value : null)
+                                            }
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="mt-3 grid gap-2 md:grid-cols-4">
+                                    {(["xStart", "xEnd", "yStart", "yEnd"] as const).map((key) => (
+                                        <div key={key}>
+                                            <Text className="mb-1 block text-xs text-slate-500">{key}</Text>
+                                            <InputNumber
+                                                value={spectrumRoi[key]}
+                                                min={0}
+                                                max={key.startsWith("x") ? selectedFrame.width : selectedFrame.height}
+                                                className="w-full"
+                                                disabled={Boolean(selectedSpectrumDisabledReason)}
+                                                placeholder={
+                                                    key === "xStart"
+                                                        ? "0"
+                                                        : key === "xEnd"
+                                                          ? String(selectedFrame.width)
+                                                          : key === "yStart"
+                                                            ? "0"
+                                                            : String(selectedFrame.height)
+                                                }
+                                                onChange={(value) =>
+                                                    setSpectrumRoi((state) => ({
+                                                        ...state,
+                                                        [key]: typeof value === "number" ? value : undefined,
+                                                    }))
+                                                }
+                                            />
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                                    <Checkbox
+                                        checked={spectrumRectifyTilt}
+                                        disabled={Boolean(selectedSpectrumDisabledReason)}
+                                        onChange={(event) => setSpectrumRectifyTilt(event.target.checked)}
+                                    >
+                                        提取前进行轻微倾斜矫正
+                                    </Checkbox>
+                                    <Button
+                                        type="primary"
+                                        loading={extractingSpectrumImageId === selectedFrame.id}
+                                        disabled={
+                                            Boolean(selectedSpectrumDisabledReason) || extractingSpectrumImageId !== null
+                                        }
+                                        title={selectedSpectrumDisabledReason || `从${selectedSpectrumSourceLabel}提取一维像素域光谱`}
+                                        onClick={() => handleExtractSpectrum(selectedFrame, selectedSummaryUsesProcessed)}
+                                    >
+                                        提取一维光谱
+                                    </Button>
+                                </div>
+
+                                {selectedSpectrumDisabledReason && (
+                                    <div className="mt-2 text-xs leading-relaxed text-orange-700">
+                                        {selectedSpectrumDisabledReason}
+                                    </div>
+                                )}
+
+                                {selectedSpectrumMismatchMessage && (
+                                    <div className="mt-2 text-xs leading-relaxed text-cyan-700">
+                                        {selectedSpectrumMismatchMessage}
+                                    </div>
+                                )}
+
+                                {selectedSpectrumResult && (
+                                    <div className="mt-4 space-y-3 rounded-lg border border-cyan-100 bg-white p-3">
+                                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                                            <Tag color="blue" className="m-0">
+                                                来源 {selectedSpectrumResult.sourceMode}
+                                            </Tag>
+                                            <Tag color="cyan" className="m-0">
+                                                方向 {selectedSpectrumResult.wavelengthAxis}
+                                            </Tag>
+                                            <Tag color="purple" className="m-0">
+                                                点数 {selectedSpectrumResult.pointCount}
+                                            </Tag>
+                                            <Tag color="geekblue" className="m-0">
+                                                偏移 {selectedSpectrumResult.shiftMin}~{selectedSpectrumResult.shiftMax}px
+                                            </Tag>
+                                        </div>
+                                        <SpectrumCurve spectrum={selectedSpectrumResult} />
+                                        <div className="grid gap-2 text-xs text-slate-600 sm:grid-cols-3">
+                                            <div>最小强度：{formatNullableNumber(selectedSpectrumResult.intensityMin)}</div>
+                                            <div>最大强度：{formatNullableNumber(selectedSpectrumResult.intensityMax)}</div>
+                                            <div>平均强度：{formatNullableNumber(selectedSpectrumResult.intensityMean)}</div>
+                                        </div>
+                                        <div className="text-xs leading-relaxed text-slate-500">
+                                            {selectedSpectrumResult.summaryMessage}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
 
                             {selectedActiveQualitySource?.qualityStatus !== "PASS" && (
                                 <div className="mb-4 rounded-lg border border-orange-200 bg-orange-50 p-3">

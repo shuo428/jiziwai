@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Alert, Button, Card, Checkbox, Input, InputNumber, Tag, Typography } from "antd";
+import { Alert, Button, Card, Checkbox, Input, InputNumber, Select, Tag, Typography } from "antd";
 import {
     Activity,
     AlertCircle,
@@ -15,8 +15,16 @@ import {
 import { toast } from "sonner";
 
 import { jniBridgeService } from "../service/jniBridgeService";
+import ImagePixelDataViewer from "../components/ImagePixelDataViewer";
+import SpectrumCurve from "../components/SpectrumCurve";
 import { useJNIStore } from "../store/jniStore";
-import type { ImageFrameRecord } from "../types/jni";
+import type {
+    CalibrationGlobalSettingsRecord,
+    ImageFrameRecord,
+    SpectrumExtractionRecord,
+    SpectrumExtractionRequest,
+    SpectrumRoi,
+} from "../types/jni";
 
 const { Title, Text } = Typography;
 
@@ -105,12 +113,36 @@ const stringFromRecord = (record: Record<string, unknown> | null | undefined, ke
     return typeof value === "string" ? value : null;
 };
 
+const booleanFromRecord = (record: Record<string, unknown> | null | undefined, key: string): boolean | null => {
+    const value = record?.[key];
+    return typeof value === "boolean" ? value : null;
+};
+
 const objectFromRecord = (
     record: Record<string, unknown> | null | undefined,
     key: string,
 ): Record<string, unknown> | null => {
     const value = record?.[key];
     return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+};
+
+const calibrationReferenceLabel = (
+    record: Record<string, unknown> | null | undefined,
+    labelKey: string,
+    sessionNumberKey: string,
+    idKey: string,
+    prefix: "D" | "F",
+): string => {
+    const label = stringFromRecord(record, labelKey);
+    if (label) {
+        return label;
+    }
+    const sessionNumber = numberFromRecord(record, sessionNumberKey);
+    if (sessionNumber !== null) {
+        return `${prefix}-${String(sessionNumber).padStart(3, "0")}`;
+    }
+    const id = numberFromRecord(record, idKey);
+    return id === null ? "-" : `ID ${id}`;
 };
 
 const metricColor = (status: MetricStatus): string => {
@@ -137,6 +169,30 @@ const dispositionColor = (status?: string | null): string => {
         return "red";
     }
     return "default";
+};
+
+const canExtractSpectrum = (frame: ImageFrameRecord | null): boolean =>
+    frame?.qualityStatus === "PASS" || frame?.processedQualityStatus === "PASS";
+
+const getSpectrumExtractionDisabledReason = (frame: ImageFrameRecord | null): string | null => {
+    if (!frame) {
+        return "暂无图像可提取，请先获取一帧图片。";
+    }
+    if (!canExtractSpectrum(frame)) {
+        return "只有原图质量为PASS，或处理后复检质量为PASS的图像，才能提取一维光谱。";
+    }
+    return null;
+};
+
+const sanitizeRoiDraft = (roi: Partial<SpectrumRoi>): SpectrumExtractionRequest["roi"] => {
+    const result: Partial<SpectrumRoi> = {};
+    (["xStart", "xEnd", "yStart", "yEnd"] as const).forEach((key) => {
+        const value = roi[key];
+        if (typeof value === "number" && Number.isFinite(value)) {
+            result[key] = Math.trunc(value);
+        }
+    });
+    return Object.keys(result).length > 0 ? result : undefined;
 };
 
 const actionColor = (severity?: string | null): string => {
@@ -431,6 +487,30 @@ const buildOriginalQualitySource = (frame: ImageFrameRecord | null): QualityMetr
     };
 };
 
+/** 将后端保存的原始 RAW 硬性检查/校准后检查快照转换为统一的指标展示结构。 */
+const buildSnapshotQualitySource = (
+    snapshot: Record<string, unknown> | null | undefined,
+): QualityMetricSource | null => {
+    const qualityStatus = stringFromRecord(snapshot, "qualityStatus");
+    if (!snapshot || !qualityStatus) {
+        return null;
+    }
+    return {
+        qualityStatus,
+        pixelMin: numberFromRecord(snapshot, "pixelMin"),
+        pixelMax: numberFromRecord(snapshot, "pixelMax"),
+        pixelMean: numberFromRecord(snapshot, "pixelMean"),
+        pixelStddev: numberFromRecord(snapshot, "pixelStddev"),
+        blackPixelRatio: numberFromRecord(snapshot, "blackPixelRatio"),
+        saturationPixelRatio: numberFromRecord(snapshot, "saturationPixelRatio"),
+        abnormalRowCount: numberFromRecord(snapshot, "abnormalRowCount"),
+        abnormalColumnCount: numberFromRecord(snapshot, "abnormalColumnCount"),
+        badPixelCount: numberFromRecord(snapshot, "badPixelCount"),
+        qualitySummaryMessage: stringFromRecord(snapshot, "summaryMessage"),
+        qualityDetails: objectFromRecord(snapshot, "details"),
+    };
+};
+
 const buildProcessedQualitySource = (frame: ImageFrameRecord | null): QualityMetricSource | null => {
     const snapshot = frame?.processedQualitySnapshot;
     const qualityStatus = stringFromRecord(snapshot, "qualityStatus") ?? frame?.processedQualityStatus ?? null;
@@ -457,6 +537,14 @@ const SpectralDataPage: React.FC = () => {
     const [loadingAction, setLoadingAction] = useState<string | null>(null);
     const [configHexText, setConfigHexText] = useState("");
     const [qualityViewMode, setQualityViewMode] = useState<QualityViewMode>("before");
+    const [globalCalibrationSettings, setGlobalCalibrationSettings] =
+        useState<CalibrationGlobalSettingsRecord | null>(null);
+    const [spectrumAxis, setSpectrumAxis] = useState<"AUTO" | "X" | "Y">("AUTO");
+    const [spectrumIntegrationMethod, setSpectrumIntegrationMethod] = useState<"MEAN" | "SUM">("MEAN");
+    const [spectrumRectifyTilt, setSpectrumRectifyTilt] = useState(true);
+    const [spectrumMaxShiftPixels, setSpectrumMaxShiftPixels] = useState<number | null>(null);
+    const [spectrumRoi, setSpectrumRoi] = useState<Partial<SpectrumRoi>>({});
+    const [spectrumResult, setSpectrumResult] = useState<SpectrumExtractionRecord | null>(null);
     const {
         connectionForm,
         bridgeState,
@@ -480,7 +568,49 @@ const SpectralDataPage: React.FC = () => {
     }, [actions]);
 
     useEffect(() => {
+        let cancelled = false;
+        jniBridgeService
+            .getCalibrationGlobalSettings()
+            .then((settings) => {
+                if (!cancelled) {
+                    setGlobalCalibrationSettings(settings);
+                }
+            })
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    useEffect(() => {
         setQualityViewMode(buildProcessedQualitySource(currentImage) ? "after" : "before");
+    }, [currentImage]);
+
+    useEffect(() => {
+        setSpectrumResult(null);
+        setSpectrumRoi({});
+        setSpectrumAxis("AUTO");
+        setSpectrumIntegrationMethod("MEAN");
+        setSpectrumRectifyTilt(true);
+        setSpectrumMaxShiftPixels(null);
+        let cancelled = false;
+        if (currentImage) {
+            jniBridgeService
+                .getLatestSpectrum(currentImage.id)
+                .then((spectrum) => {
+                    if (!cancelled) {
+                        setSpectrumResult(spectrum);
+                    }
+                })
+                .catch(() => {
+                    if (!cancelled) {
+                        setSpectrumResult(null);
+                    }
+                });
+        }
+        return () => {
+            cancelled = true;
+        };
     }, [currentImage]);
 
     const connectionSummary = useMemo(() => {
@@ -498,6 +628,40 @@ const SpectralDataPage: React.FC = () => {
         () => buildProcessedQualitySource(currentImage),
         [currentImage],
     );
+    const currentRawHardQualitySource = useMemo(
+        () => buildSnapshotQualitySource(currentImage?.rawHardQualitySnapshot),
+        [currentImage],
+    );
+    const currentCalibratedQualitySource = useMemo(
+        () => buildSnapshotQualitySource(currentImage?.calibratedQualitySnapshot),
+        [currentImage],
+    );
+    const currentFrameCalibration = useMemo(
+        () => objectFromRecord(currentImage?.qualityDetails, "calibration"),
+        [currentImage],
+    );
+    const captureGlobalCalibrationEnabled =
+        booleanFromRecord(currentFrameCalibration, "calibrationPackageEnabled") ??
+        booleanFromRecord(currentFrameCalibration, "globalCalibrationEnabled");
+    const captureCalibrationApplied = booleanFromRecord(currentFrameCalibration, "calibrationApplied");
+    const captureDefectMapEnabled = booleanFromRecord(currentFrameCalibration, "defectMapEnabled");
+    const captureDefectMapApplied = booleanFromRecord(currentFrameCalibration, "defectMapApplied");
+    const captureDarkCalibrationLabel = calibrationReferenceLabel(
+        currentFrameCalibration,
+        "darkCalibrationLabel",
+        "darkSessionNumber",
+        "darkCalibrationId",
+        "D",
+    );
+    const captureFlatCalibrationLabel = calibrationReferenceLabel(
+        currentFrameCalibration,
+        "flatCalibrationLabel",
+        "flatSessionNumber",
+        "flatCalibrationId",
+        "F",
+    );
+    const captureDarkCalibrationId = numberFromRecord(currentFrameCalibration, "darkCalibrationId");
+    const captureFlatCalibrationId = numberFromRecord(currentFrameCalibration, "flatCalibrationId");
     const currentActiveQualitySource = qualityViewMode === "after" && currentProcessedQualitySource
         ? currentProcessedQualitySource
         : currentOriginalQualitySource;
@@ -512,6 +676,12 @@ const SpectralDataPage: React.FC = () => {
     const qualityDecisionReasons = useMemo(
         () => getQualityDecisionReasons(currentActiveQualitySource),
         [currentActiveQualitySource],
+    );
+    const rawHardMetricExplanations = useMemo(
+        () => buildQualityMetricExplanations(currentRawHardQualitySource).filter((metric) =>
+            ["dynamicRange", "blackPixelRatio", "saturationPixelRatio"].includes(metric.key),
+        ),
+        [currentRawHardQualitySource],
     );
     const currentProcessingDisabledReason = useMemo(
         () => getProcessingDisabledReason(currentImage),
@@ -578,6 +748,38 @@ const SpectralDataPage: React.FC = () => {
             "process",
             () => jniBridgeService.processImage(currentImage.id),
             "当前图像处理完成",
+        );
+    };
+
+    const handleExtractCurrentSpectrum = () => {
+        if (!currentImage) {
+            toast.warning("暂无图像可提取，请先获取一帧图片。");
+            return;
+        }
+        const disabledReason = getSpectrumExtractionDisabledReason(currentImage);
+        if (disabledReason) {
+            toast.warning(disabledReason);
+            return;
+        }
+
+        const request: SpectrumExtractionRequest = {
+            sourceMode: "AUTO",
+            wavelengthAxis: spectrumAxis,
+            rectifyTilt: spectrumRectifyTilt,
+            integrationMethod: spectrumIntegrationMethod,
+            roi: sanitizeRoiDraft(spectrumRoi),
+        };
+        if (typeof spectrumMaxShiftPixels === "number") {
+            request.maxShiftPixels = spectrumMaxShiftPixels;
+        }
+
+        return runAction(
+            "spectrum",
+            async () => {
+                const result = await jniBridgeService.extractSpectrum(currentImage.id, request);
+                setSpectrumResult(result);
+            },
+            "一维光谱提取完成",
         );
     };
 
@@ -716,8 +918,70 @@ const SpectralDataPage: React.FC = () => {
                 </div>
             </Card>
 
-            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] xl:items-start">
-                <Card className="bg-white border border-gray-200 shadow-sm">
+            <Card className="bg-white border border-gray-200 shadow-sm">
+                <div className="flex flex-col">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                        <Title level={5} className="!mb-0 flex items-center gap-2 !text-slate-800">
+                            <Activity size={18} />
+                            命令与原始状态
+                        </Title>
+                        <div className="flex flex-wrap gap-2">
+                            <Button
+                                icon={<RotateCcw size={16} />}
+                                loading={loadingAction === "reset"}
+                                disabled={!connected || loadingAction !== null}
+                                onClick={handleReset}
+                            >
+                                复位
+                            </Button>
+                            <Button
+                                icon={<Binary size={16} />}
+                                loading={loadingAction === "status"}
+                                disabled={!connected || loadingAction !== null}
+                                onClick={handleQueryStatus}
+                            >
+                                查询状态
+                            </Button>
+                        </div>
+                    </div>
+
+                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(260px,0.8fr)_minmax(220px,0.6fr)]">
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                            <Text className="mb-2 block text-sm text-slate-500">状态位</Text>
+                            <div className="max-h-24 overflow-auto break-all rounded bg-white p-3 font-mono text-xs leading-relaxed text-slate-800">
+                                {latestStatus?.statusBinary || "暂无状态数据"}
+                            </div>
+                            {latestStatus && (
+                                <div className="mt-2 text-xs text-slate-500">
+                                    statusBits={latestStatus.statusBits} · errorCode={latestStatus.errorCode}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                            <Text className="mb-2 block text-sm text-slate-500">配置应答</Text>
+                            {latestConfigAck ? (
+                                <div className="font-mono text-sm text-slate-800">
+                                    resultCode={latestConfigAck.resultCode} · failedAddr=
+                                    {latestConfigAck.failedAddr}
+                                </div>
+                            ) : (
+                                <Text className="text-slate-500">暂无配置应答</Text>
+                            )}
+                        </div>
+
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                            <Text className="mb-2 block text-sm text-slate-500">数据库历史帧</Text>
+                            <div className="flex items-center gap-2">
+                                <Tag color="green">PostgreSQL</Tag>
+                                <Text className="text-sm text-slate-700">{imageHistory.length} 帧</Text>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </Card>
+
+            <Card className="bg-white border border-gray-200 shadow-sm">
                     <div className="flex h-full flex-col">
                         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                             <div>
@@ -728,6 +992,13 @@ const SpectralDataPage: React.FC = () => {
                                 <Text className="text-xs text-slate-500">显示最新一帧预览，原始 RAW 已保存在服务器</Text>
                             </div>
                             <div className="flex flex-wrap items-center justify-end gap-2">
+                                <Tag color={globalCalibrationSettings?.enabled ? "cyan" : "default"}>
+                                    {globalCalibrationSettings?.enabled
+                                        ? globalCalibrationSettings.defectMapEnabled
+                                            ? "校准包 + 稳定缺陷修复已启用"
+                                            : "校准包已启用"
+                                        : "校准包未启用"}
+                                </Tag>
                                 <Checkbox
                                     checked={autoProcessAfterCapture}
                                     disabled={loadingAction !== null}
@@ -758,148 +1029,175 @@ const SpectralDataPage: React.FC = () => {
                             </div>
                         </div>
 
-                        <div className="min-h-[320px] flex-1 overflow-hidden rounded-lg border border-slate-200 bg-slate-950 shadow-inner">
-                            {currentImage?.imageDataUrl ? (
-                                <div
-                                    className={`grid h-full min-h-[320px] gap-px bg-slate-800 ${
-                                        currentImage.processedImageDataUrl ? "md:grid-cols-2" : "grid-cols-1"
-                                    }`}
-                                >
-                                    <div className="flex min-h-[320px] flex-col bg-slate-950">
-                                        <div className="flex flex-1 items-center justify-center p-2">
-                                            <img
-                                                src={currentImage.imageDataUrl}
-                                                alt="当前原始光谱图像"
-                                                className="max-h-[500px] max-w-full object-contain"
-                                            />
-                                        </div>
-                                        <div className="border-t border-slate-800 px-3 py-2 text-center text-xs font-medium text-slate-300">
-                                            原图
-                                        </div>
-                                    </div>
-                                    {currentImage.processedImageDataUrl && (
+                        <div className="grid gap-4 xl:grid-cols-[minmax(50%,1.1fr)_minmax(320px,0.9fr)] xl:items-start">
+                            <div className="min-h-[320px] overflow-hidden rounded-lg border border-slate-200 bg-slate-950 shadow-inner">
+                                {currentImage?.imageDataUrl ? (
+                                    <div
+                                        className={`grid h-full min-h-[320px] gap-px bg-slate-800 ${
+                                            currentImage.processedImageDataUrl ? "md:grid-cols-2" : "grid-cols-1"
+                                        }`}
+                                    >
                                         <div className="flex min-h-[320px] flex-col bg-slate-950">
                                             <div className="flex flex-1 items-center justify-center p-2">
                                                 <img
-                                                    src={currentImage.processedImageDataUrl}
-                                                    alt="当前处理后光谱图像"
+                                                    src={currentImage.imageDataUrl}
+                                                    alt="当前原始光谱图像"
                                                     className="max-h-[500px] max-w-full object-contain"
                                                 />
                                             </div>
-                                            <div className="border-t border-slate-800 px-3 py-2 text-center text-xs font-medium text-emerald-300">
-                                                处理后
+                                            <div className="border-t border-slate-800 px-3 py-2 text-center text-xs font-medium text-slate-300">
+                                                原图
                                             </div>
                                         </div>
-                                    )}
-                                </div>
-                            ) : (
-                                <div className="flex min-h-[320px] flex-col items-center justify-center text-center text-slate-400">
-                                    <Camera size={42} className="mx-auto mb-3 opacity-60" />
-                                    <Text className="text-slate-400">暂无图像帧</Text>
-                                </div>
-                            )}
-                        </div>
-
-                        {currentImage && (
-                            <div className="mt-3 grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
-                                <div>
-                                    <Text className="block text-xs text-slate-500">尺寸</Text>
-                                    <span className="font-medium text-slate-800">
-                                        {currentImage.width} x {currentImage.height}
-                                    </span>
-                                </div>
-                                <div>
-                                    <Text className="block text-xs text-slate-500">8-bit预览</Text>
-                                    <span className="font-medium text-slate-800">{currentImage.raw8Length} bytes</span>
-                                </div>
-                                <div>
-                                    <Text className="block text-xs text-slate-500">接收时间</Text>
-                                    <span className="font-medium text-slate-800">
-                                        {new Date(currentImage.timestamp).toLocaleString("zh-CN")}
-                                    </span>
-                                </div>
-                                <div>
-                                    <Text className="block text-xs text-slate-500">质量状态</Text>
-                                    <Tag color={qualityColor(currentImage.qualityStatus)} className="mt-1">
-                                        {currentImage.qualityStatus || "NOT_EVALUATED"}
-                                    </Tag>
-                                </div>
-                                <div>
-                                    <Text className="block text-xs text-slate-500">图像处理</Text>
-                                    <Tag color={currentProcessingDisplay.color} className="mt-1">
-                                        {currentProcessingDisplay.label}
-                                    </Tag>
-                                </div>
-                            </div>
-                        )}
-                    </div>
-                </Card>
-
-                <Card className="bg-white border border-gray-200 shadow-sm">
-                    <div className="flex flex-col">
-                        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                            <Title level={5} className="!mb-0 flex items-center gap-2 !text-slate-800">
-                                <Activity size={18} />
-                                命令与原始状态
-                            </Title>
-                            <div className="flex flex-wrap gap-2">
-                                <Button
-                                    icon={<RotateCcw size={16} />}
-                                    loading={loadingAction === "reset"}
-                                    disabled={!connected || loadingAction !== null}
-                                    onClick={handleReset}
-                                >
-                                    复位
-                                </Button>
-                                <Button
-                                    icon={<Binary size={16} />}
-                                    loading={loadingAction === "status"}
-                                    disabled={!connected || loadingAction !== null}
-                                    onClick={handleQueryStatus}
-                                >
-                                    查询状态
-                                </Button>
-                            </div>
-                        </div>
-
-                        <div className="grid flex-1 gap-3">
-                            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                                <Text className="mb-2 block text-sm text-slate-500">状态位</Text>
-                                <div className="max-h-24 overflow-auto break-all rounded bg-white p-3 font-mono text-xs leading-relaxed text-slate-800">
-                                    {latestStatus?.statusBinary || "暂无状态数据"}
-                                </div>
-                                {latestStatus && (
-                                    <div className="mt-2 text-xs text-slate-500">
-                                        statusBits={latestStatus.statusBits} · errorCode={latestStatus.errorCode}
+                                        {currentImage.processedImageDataUrl && (
+                                            <div className="flex min-h-[320px] flex-col bg-slate-950">
+                                                <div className="flex flex-1 items-center justify-center p-2">
+                                                    <img
+                                                        src={currentImage.processedImageDataUrl}
+                                                        alt="当前处理后光谱图像"
+                                                        className="max-h-[500px] max-w-full object-contain"
+                                                    />
+                                                </div>
+                                                <div className="border-t border-slate-800 px-3 py-2 text-center text-xs font-medium text-emerald-300">
+                                                    处理后
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <div className="flex min-h-[320px] flex-col items-center justify-center text-center text-slate-400">
+                                        <Camera size={42} className="mx-auto mb-3 opacity-60" />
+                                        <Text className="text-slate-400">暂无图像帧</Text>
                                     </div>
                                 )}
                             </div>
 
-                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-                                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                                    <Text className="mb-2 block text-sm text-slate-500">配置应答</Text>
-                                    {latestConfigAck ? (
-                                        <div className="font-mono text-sm text-slate-800">
-                                            resultCode={latestConfigAck.resultCode} · failedAddr=
-                                            {latestConfigAck.failedAddr}
-                                        </div>
-                                    ) : (
-                                        <Text className="text-slate-500">暂无配置应答</Text>
-                                    )}
-                                </div>
+                            <div className="space-y-3">
+                                {!currentImage && (
+                                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+                                        获取一帧后，这里会显示尺寸、质量、处理状态以及本帧校准审计。
+                                    </div>
+                                )}
 
-                                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                                    <Text className="mb-2 block text-sm text-slate-500">数据库历史帧</Text>
-                                    <div className="flex items-center gap-2">
-                                        <Tag color="green">PostgreSQL</Tag>
-                                        <Text className="text-sm text-slate-700">{imageHistory.length} 帧</Text>
+                                {currentImage && (
+                                    <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+                                        <div>
+                                            <Text className="block text-xs text-slate-500">尺寸</Text>
+                                            <span className="font-medium text-slate-800">
+                                                {currentImage.width} x {currentImage.height}
+                                            </span>
+                                        </div>
+                                        <div>
+                                            <Text className="block text-xs text-slate-500">8-bit预览</Text>
+                                            <span className="font-medium text-slate-800">{currentImage.raw8Length} bytes</span>
+                                        </div>
+                                        <div>
+                                            <Text className="block text-xs text-slate-500">接收时间</Text>
+                                            <span className="font-medium text-slate-800">
+                                                {new Date(currentImage.timestamp).toLocaleString("zh-CN")}
+                                            </span>
+                                        </div>
+                                        <div>
+                                            <Text className="block text-xs text-slate-500">质量状态</Text>
+                                            <Tag color={qualityColor(currentImage.qualityStatus)} className="mt-1">
+                                                {currentImage.qualityStatus || "NOT_EVALUATED"}
+                                            </Tag>
+                                        </div>
+                                        <div>
+                                            <Text className="block text-xs text-slate-500">图像处理</Text>
+                                            <Tag color={currentProcessingDisplay.color} className="mt-1">
+                                                {currentProcessingDisplay.label}
+                                            </Tag>
+                                        </div>
+                                        <div className="sm:col-span-2 xl:col-span-1 2xl:col-span-2">
+                                            <Text className="mb-1 block text-xs text-slate-500">RAW16像素</Text>
+                                            <ImagePixelDataViewer
+                                                frame={currentImage}
+                                                defaultSource={
+                                                    qualityViewMode === "after" && currentProcessedQualitySource
+                                                        ? "PROCESSED"
+                                                        : "ORIGINAL"
+                                                }
+                                            />
+                                        </div>
+                                    </div>
+                                )}
+
+                                {currentImage && captureGlobalCalibrationEnabled && (
+                                    <div className="rounded-lg border border-cyan-200 bg-cyan-50 p-3">
+                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                    <Text className="text-sm font-medium text-cyan-800">本帧校准包与缺陷地图审计</Text>
+                                    <div className="flex flex-wrap gap-2">
+                                        <Tag color="cyan" className="m-0">采集时校准包已锁定</Tag>
+                                        <Tag color={captureCalibrationApplied ? "green" : "orange"} className="m-0">
+                                            {captureCalibrationApplied ? "已应用匹配参考" : "未找到匹配参考"}
+                                        </Tag>
+                                        <Tag color={captureDefectMapApplied ? "green" : captureDefectMapEnabled ? "orange" : "default"} className="m-0">
+                                            {captureDefectMapApplied
+                                                ? "已校正稳定缺陷"
+                                                : captureDefectMapEnabled
+                                                  ? "稳定缺陷地图无可校正项"
+                                                  : "未启用稳定缺陷修复"}
+                                        </Tag>
                                     </div>
                                 </div>
+                                <Text className="block text-xs leading-5 text-slate-600">
+                                    {stringFromRecord(currentFrameCalibration, "message") ||
+                                        "原始 RAW 不会被覆盖；先保留硬性检查，再对校准后数据做完整质量分析。"}
+                                </Text>
+                                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                    <div className="rounded-md border border-cyan-100 bg-white/80 p-2.5 text-xs">
+                                        <div className="mb-1 text-slate-500">采集锁定暗场</div>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <Tag color="blue" className="m-0">{captureDarkCalibrationLabel}</Tag>
+                                            {captureDarkCalibrationId !== null && (
+                                                <span className="text-slate-500">数据库ID {captureDarkCalibrationId}</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div className="rounded-md border border-cyan-100 bg-white/80 p-2.5 text-xs">
+                                        <div className="mb-1 text-slate-500">采集锁定平场</div>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <Tag color="purple" className="m-0">{captureFlatCalibrationLabel}</Tag>
+                                            {captureFlatCalibrationId !== null && (
+                                                <span className="text-slate-500">数据库ID {captureFlatCalibrationId}</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                                {currentRawHardQualitySource && (
+                                    <div className="mt-3">
+                                        <div className="mb-2 flex flex-wrap items-center gap-2">
+                                            <Text className="text-xs font-medium text-slate-700">原始 RAW 硬性检查</Text>
+                                            <Tag color={qualityColor(currentRawHardQualitySource.qualityStatus)} className="m-0">
+                                                {currentRawHardQualitySource.qualityStatus}
+                                            </Tag>
+                                        </div>
+                                        <div className="grid gap-2 md:grid-cols-3">
+                                            {rawHardMetricExplanations.map((metric) => (
+                                                <div key={metric.key} className="rounded-md border border-cyan-100 bg-white/80 p-2.5 text-xs">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <span className="font-medium text-slate-700">{metric.label}</span>
+                                                        <Tag color={metricColor(metric.status)} className="m-0">{metric.status}</Tag>
+                                                    </div>
+                                                    <div className="mt-1 font-mono text-slate-800">{metric.value}</div>
+                                                    <div className="mt-1 text-slate-500">合格：{metric.healthyCondition}</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                        <Text className="mt-3 block text-xs text-slate-600">
+                                            {currentCalibratedQualitySource
+                                                ? `本帧完整质量分析基于校准后数据，状态：${currentCalibratedQualitySource.qualityStatus}。`
+                                                : "本帧没有可实际应用的尺寸匹配参考，仍展示原始 RAW 的完整质量分析。"}
+                                        </Text>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </div>
                 </Card>
-            </div>
 
             <Card className="bg-white border border-gray-200 shadow-sm">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -1070,7 +1368,17 @@ const SpectralDataPage: React.FC = () => {
                             </div>
                         )}
 
-                        <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+                        <div>
+                            <Text className="mb-2 block text-sm font-medium text-slate-700">
+                                {qualityViewMode === "before" && currentCalibratedQualitySource
+                                    ? captureDefectMapApplied
+                                        ? "校准及缺陷地图修复后完整质量指标"
+                                        : "校准后完整质量指标"
+                                    : qualityViewMode === "before"
+                                      ? "原始 RAW 完整质量指标"
+                                      : "处理后完整质量指标"}
+                            </Text>
+                            <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
                             {qualityMetricExplanations.map((metric) => (
                                 <div key={metric.key} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -1098,7 +1406,157 @@ const SpectralDataPage: React.FC = () => {
                                     </div>
                                 </div>
                             ))}
+                            </div>
                         </div>
+                    </div>
+                )}
+            </Card>
+
+            <Card className="bg-white border border-gray-200 shadow-sm">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <Title level={5} className="!mb-0 flex items-center gap-2 !text-slate-800">
+                            <Activity size={18} />
+                            当前帧一维光谱提取
+                        </Title>
+                        <Text className="text-xs text-slate-500">
+                            同一张图像只保留最新一条像素域光谱；改变参数后重新提取会覆盖原记录
+                        </Text>
+                    </div>
+                    <Tag color={canExtractSpectrum(currentImage) ? "green" : "orange"}>
+                        {canExtractSpectrum(currentImage) ? "可提取" : "等待PASS图像"}
+                    </Tag>
+                </div>
+
+                {!currentImage ? (
+                    <Text className="text-sm text-slate-500">暂无图像，获取一帧后可提取一维光谱。</Text>
+                ) : (
+                    <div className="space-y-4">
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                            <div>
+                                <Text className="mb-1 block text-xs text-slate-500">波长方向</Text>
+                                <Select
+                                    value={spectrumAxis}
+                                    className="w-full"
+                                    options={[
+                                        { value: "AUTO", label: "自动判断" },
+                                        { value: "X", label: "X 横向" },
+                                        { value: "Y", label: "Y 纵向" },
+                                    ]}
+                                    onChange={(value) => setSpectrumAxis(value as "AUTO" | "X" | "Y")}
+                                />
+                            </div>
+                            <div>
+                                <Text className="mb-1 block text-xs text-slate-500">积分方式</Text>
+                                <Select
+                                    value={spectrumIntegrationMethod}
+                                    className="w-full"
+                                    options={[
+                                        { value: "MEAN", label: "平均强度" },
+                                        { value: "SUM", label: "积分总强度" },
+                                    ]}
+                                    onChange={(value) => setSpectrumIntegrationMethod(value as "MEAN" | "SUM")}
+                                />
+                            </div>
+                            <div>
+                                <Text className="mb-1 block text-xs text-slate-500">最大矫正偏移</Text>
+                                <InputNumber
+                                    value={spectrumMaxShiftPixels}
+                                    min={0}
+                                    max={200}
+                                    className="w-full"
+                                    placeholder="自动"
+                                    addonAfter="px"
+                                    onChange={(value) =>
+                                        setSpectrumMaxShiftPixels(typeof value === "number" ? value : null)
+                                    }
+                                />
+                            </div>
+                        </div>
+
+                        <div className="grid gap-3 md:grid-cols-4">
+                            {(["xStart", "xEnd", "yStart", "yEnd"] as const).map((key) => (
+                                <div key={key}>
+                                    <Text className="mb-1 block text-xs text-slate-500">{key}</Text>
+                                    <InputNumber
+                                        value={spectrumRoi[key]}
+                                        min={0}
+                                        max={key.startsWith("x") ? currentImage.width : currentImage.height}
+                                        className="w-full"
+                                        placeholder={
+                                            key === "xStart"
+                                                ? "0"
+                                                : key === "xEnd"
+                                                  ? String(currentImage.width)
+                                                  : key === "yStart"
+                                                    ? "0"
+                                                    : String(currentImage.height)
+                                        }
+                                        onChange={(value) =>
+                                            setSpectrumRoi((state) => ({
+                                                ...state,
+                                                [key]: typeof value === "number" ? value : undefined,
+                                            }))
+                                        }
+                                    />
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <Checkbox
+                                checked={spectrumRectifyTilt}
+                                onChange={(event) => setSpectrumRectifyTilt(event.target.checked)}
+                            >
+                                提取前进行轻微倾斜矫正
+                            </Checkbox>
+                            <Button
+                                type="primary"
+                                loading={loadingAction === "spectrum"}
+                                disabled={
+                                    Boolean(getSpectrumExtractionDisabledReason(currentImage)) ||
+                                    loadingAction !== null
+                                }
+                                title={getSpectrumExtractionDisabledReason(currentImage) || "提取一维像素域光谱"}
+                                onClick={handleExtractCurrentSpectrum}
+                            >
+                                提取一维光谱
+                            </Button>
+                        </div>
+
+                        {getSpectrumExtractionDisabledReason(currentImage) && (
+                            <div className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-xs leading-relaxed text-orange-700">
+                                {getSpectrumExtractionDisabledReason(currentImage)}
+                            </div>
+                        )}
+
+                        {spectrumResult && (
+                            <div className="space-y-3 rounded-lg border border-cyan-100 bg-cyan-50 p-3">
+                                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                                    <Tag color="blue" className="m-0">
+                                        来源 {spectrumResult.sourceMode}
+                                    </Tag>
+                                    <Tag color="cyan" className="m-0">
+                                        方向 {spectrumResult.wavelengthAxis}
+                                    </Tag>
+                                    <Tag color="purple" className="m-0">
+                                        点数 {spectrumResult.pointCount}
+                                    </Tag>
+                                    <Tag color="geekblue" className="m-0">
+                                        偏移 {spectrumResult.shiftMin}~{spectrumResult.shiftMax}px
+                                    </Tag>
+                                </div>
+                                <SpectrumCurve spectrum={spectrumResult} />
+                                <div className="grid gap-2 text-xs text-slate-600 sm:grid-cols-3">
+                                    <div>最小强度：{formatNullableNumber(spectrumResult.intensityMin)}</div>
+                                    <div>最大强度：{formatNullableNumber(spectrumResult.intensityMax)}</div>
+                                    <div>平均强度：{formatNullableNumber(spectrumResult.intensityMean)}</div>
+                                </div>
+                                <div className="text-xs leading-relaxed text-slate-500">
+                                    {spectrumResult.summaryMessage}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
             </Card>

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom';
 import { Layout as AntLayout, Menu, ConfigProvider, Button, Dropdown } from 'antd';
 import type { MenuProps } from 'antd';
-import { Home, Cpu, Radio, LogOut, User, MessageSquare, ChevronLeft, ChevronRight, Database } from 'lucide-react';
+import { Home, Cpu, Radio, LogOut, User, MessageSquare, ChevronLeft, ChevronRight, Database, Settings2 } from 'lucide-react';
 import { useUserStore } from '../store/userStore';
 import { toast } from 'sonner';
 
@@ -29,6 +29,11 @@ const LayoutContent: React.FC = () => {
             key: '/dashboard',
             icon: <Home size={18} />,
             label: <Link to="/dashboard">仪表盘</Link>,
+        },
+        {
+            key: '/calibration',
+            icon: <Settings2 size={18} />,
+            label: <Link to="/calibration">校准与缺陷地图</Link>,
         },
         {
             key: '/spectral-data',
@@ -127,6 +132,8 @@ const LayoutContent: React.FC = () => {
                                   ? '获取光谱数据'
                                   : location.pathname === '/spectral-management'
                                     ? '光谱数据管理'
+                                    : location.pathname === '/calibration'
+                                      ? '校准与缺陷地图'
                                     : location.pathname === '/profile'
                                       ? '个人信息'
                                       : 'AI 助手'}
