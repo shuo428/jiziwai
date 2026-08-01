@@ -6,6 +6,7 @@ import LoginPage from "../pages/Login";
 import RegisterPage from "../pages/Register";
 import ProfilePage from "../pages/Profile";
 import ChatPage from "../pages/Chat";
+import CalibrationPage from "../pages/Calibration";
 import ProtectedRoute from "../components/ProtectedRoute";
 import Layout from "../components/Layout";
 
@@ -44,6 +45,14 @@ export default function AppRouter() {
                     element={
                         <ProtectedRoute>
                             <SpectralDataManagementPage />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/calibration"
+                    element={
+                        <ProtectedRoute>
+                            <CalibrationPage />
                         </ProtectedRoute>
                     }
                 />

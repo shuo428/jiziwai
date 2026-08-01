@@ -634,14 +634,5 @@ public class SpectralImageQualityAnalysisService {
             this.summaryMessage = summaryMessage;
         }
 
-        /**
-         * t_spectral_capture 使用 FAILED，而质量表使用 FAIL；这里集中做一次枚举映射。
-         */
-        public String toCaptureStatus() {
-            if ("FAIL".equals(qualityStatus)) {
-                return "FAILED";
-            }
-            return qualityStatus;
-        }
     }
 }

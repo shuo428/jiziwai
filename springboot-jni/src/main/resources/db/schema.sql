@@ -291,6 +291,104 @@ CREATE INDEX IF NOT EXISTS idx_action_capture
 COMMENT ON TABLE t_image_action_log IS '接受、校正、重拍、丢弃、报警、复位或重连记录';
 
 -- ---------------------------------------------------------------------------
+-- Pixel-domain spectrum extraction
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS t_spectrum_extraction (
+    id BIGSERIAL PRIMARY KEY,
+    image_id BIGINT NOT NULL
+        REFERENCES t_spectral_image(id) ON DELETE CASCADE,
+    capture_id BIGINT NOT NULL
+        REFERENCES t_spectral_capture(id) ON DELETE CASCADE,
+    user_id BIGINT
+        REFERENCES t_user(id) ON DELETE SET NULL,
+
+    source_mode VARCHAR(16) NOT NULL
+        CHECK (source_mode IN ('ORIGINAL', 'PROCESSED')),
+    source_quality_status VARCHAR(16) NOT NULL,
+    wavelength_axis VARCHAR(8) NOT NULL
+        CHECK (wavelength_axis IN ('X', 'Y')),
+    roi JSONB NOT NULL,
+    rectified BOOLEAN NOT NULL DEFAULT TRUE,
+    max_shift_pixels INTEGER NOT NULL DEFAULT 0,
+    shift_summary JSONB NOT NULL DEFAULT '{}'::JSONB,
+    integration_method VARCHAR(16) NOT NULL
+        CHECK (integration_method IN ('MEAN', 'SUM')),
+
+    point_count INTEGER NOT NULL,
+    intensity_min NUMERIC(20, 8),
+    intensity_max NUMERIC(20, 8),
+    intensity_mean NUMERIC(20, 8),
+    spectrum_points JSONB NOT NULL,
+
+    algorithm_version VARCHAR(48) NOT NULL,
+    summary_message TEXT,
+    details JSONB NOT NULL DEFAULT '{}'::JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_spectrum_extraction_image
+    ON t_spectrum_extraction(image_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_spectrum_extraction_image
+    ON t_spectrum_extraction(image_id);
+
+COMMENT ON TABLE t_spectrum_extraction IS '从PASS图像提取的一维像素域光谱曲线';
+COMMENT ON COLUMN t_spectrum_extraction.spectrum_points IS 'pixelIndex-intensity点列，尚未做波长nm标定';
+COMMENT ON COLUMN t_spectrum_extraction.roi IS '本次提取使用的左闭右开ROI范围';
+
+-- ---------------------------------------------------------------------------
+-- Dark/flat calibration sessions
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS t_calibration_session (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT REFERENCES t_user(id) ON DELETE SET NULL,
+    session_number INTEGER NOT NULL,
+    calibration_type VARCHAR(8) NOT NULL
+        CHECK (calibration_type IN ('DARK', 'FLAT')),
+    acquisition_mode VARCHAR(16) NOT NULL
+        CHECK (acquisition_mode IN ('SIMULATED', 'HARDWARE', 'IMAGES')),
+    status VARCHAR(16) NOT NULL
+        CHECK (status IN ('PROCESSING', 'READY', 'FAILED')),
+    expected_frame_count INTEGER NOT NULL,
+    frame_count INTEGER NOT NULL DEFAULT 0,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    storage_uri TEXT,
+    defect_map_uri TEXT,
+    bad_pixel_count INTEGER NOT NULL DEFAULT 0,
+    bad_row_count INTEGER NOT NULL DEFAULT 0,
+    bad_column_count INTEGER NOT NULL DEFAULT 0,
+    summary JSONB NOT NULL DEFAULT '{}'::JSONB,
+    message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_calibration_session_type
+    ON t_calibration_session(user_id, calibration_type, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_calibration_session_type_number
+    ON t_calibration_session(user_id, calibration_type, session_number);
+
+COMMENT ON TABLE t_calibration_session IS '暗场/平场多帧校准会话及缺陷地图摘要';
+COMMENT ON COLUMN t_calibration_session.storage_uri IS '校准RAW帧和预览图所在的服务器目录';
+COMMENT ON COLUMN t_calibration_session.defect_map_uri IS '多帧投票生成的坏点/异常行列地图JSON';
+
+-- 每个用户独立保存的当前校准包。暗场/平场参考和多帧缺陷地图均按会话版本锁定。
+CREATE TABLE IF NOT EXISTS t_calibration_global_setting (
+    user_id BIGINT PRIMARY KEY REFERENCES t_user(id) ON DELETE CASCADE,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    dark_calibration_id BIGINT REFERENCES t_calibration_session(id) ON DELETE SET NULL,
+    flat_calibration_id BIGINT REFERENCES t_calibration_session(id) ON DELETE SET NULL,
+    defect_map_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+COMMENT ON TABLE t_calibration_global_setting IS '用户级当前校准包及多帧缺陷地图启用状态';
+
+-- ---------------------------------------------------------------------------
 -- Frontend/report summary view
 -- ---------------------------------------------------------------------------
 

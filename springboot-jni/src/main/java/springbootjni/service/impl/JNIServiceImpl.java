@@ -6,13 +6,26 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import springbootjni.dto.jni.BridgeConnectRequest;
 import springbootjni.dto.jni.BridgeStateResponse;
+import springbootjni.dto.jni.CalibrationRequest;
+import springbootjni.dto.jni.CalibrationGlobalSettingsRequest;
+import springbootjni.dto.jni.CalibrationGlobalSettingsResponse;
+import springbootjni.dto.jni.CalibrationPreviewResponse;
+import springbootjni.dto.jni.CalibrationSessionResponse;
 import springbootjni.dto.jni.ImageFrameResponse;
+import springbootjni.dto.jni.ImagePixelDataResponse;
+import springbootjni.dto.jni.MultiFrameAnalysisRequest;
+import springbootjni.dto.jni.MultiFrameAnalysisResponse;
+import springbootjni.dto.jni.SpectrumExtractionRequest;
+import springbootjni.dto.jni.SpectrumExtractionResponse;
 import springbootjni.dto.jni.TriggerCaptureResponse;
 import springbootjni.handler.WebSocketHandler;
 import springbootjni.jni.BridgeListener;
 import springbootjni.jni.SpectraBridgeNative;
 import springbootjni.service.JNIService;
 import springbootjni.service.SpectralImagePersistenceService;
+import springbootjni.service.SpectralCalibrationService;
+import springbootjni.service.SpectralMultiFrameQualityAnalysisService;
+import springbootjni.service.SpectralSpectrumExtractionService;
 
 import javax.annotation.PreDestroy;
 import java.time.Instant;
@@ -44,6 +57,8 @@ public class JNIServiceImpl implements JNIService {
     private final WebSocketHandler webSocketHandler;
     private final ObjectMapper objectMapper;
     private final SpectralImagePersistenceService persistenceService;
+    private final SpectralSpectrumExtractionService spectrumExtractionService;
+    private final SpectralCalibrationService calibrationService;
 
     /** 保护native桥对象和连接状态。 */
     private final Object bridgeLock = new Object();
@@ -197,7 +212,7 @@ public class JNIServiceImpl implements JNIService {
             }
 
             long captureId = persistenceService.createCapture(userId, requestId, configSnapshot);
-            PendingCapture capture = new PendingCapture(captureId, requestId, verifyCrc, autoProcess);
+            PendingCapture capture = new PendingCapture(userId, captureId, requestId, verifyCrc, autoProcess);
             pendingCapture = capture;
 
             capture.timeoutFuture = captureTimeoutExecutor.schedule(
@@ -272,6 +287,7 @@ public class JNIServiceImpl implements JNIService {
         try {
             ImageFrameResponse frame = persistenceService.saveSuccessfulFrame(
                     capture.captureId,
+                    capture.userId,
                     capture.requestId,
                     width,
                     height,
@@ -376,6 +392,41 @@ public class JNIServiceImpl implements JNIService {
     }
 
     @Override
+    public ImagePixelDataResponse getImagePixels(Long userId,
+                                                 long imageId,
+                                                 String sourceMode,
+                                                 String displayFormat,
+                                                 boolean fullFrame,
+                                                 Integer xStart,
+                                                 Integer yStart,
+                                                 Integer width,
+                                                 Integer height) {
+        return persistenceService.getImagePixels(
+                userId,
+                imageId,
+                sourceMode,
+                displayFormat,
+                fullFrame,
+                xStart,
+                yStart,
+                width,
+                height);
+    }
+
+    @Override
+    public SpectrumExtractionResponse extractSpectrum(Long userId,
+                                                      long imageId,
+                                                      SpectrumExtractionRequest request) {
+        ensureNoPendingCaptureForHistoryMutation();
+        return spectrumExtractionService.extract(userId, imageId, request);
+    }
+
+    @Override
+    public SpectrumExtractionResponse getLatestSpectrum(Long userId, long imageId) {
+        return spectrumExtractionService.getLatest(userId, imageId);
+    }
+
+    @Override
     public boolean deleteImage(Long userId, long imageId) {
         ensureNoPendingCaptureForHistoryMutation();
         return persistenceService.deleteImage(userId, imageId);
@@ -385,6 +436,65 @@ public class JNIServiceImpl implements JNIService {
     public int clearImages(Long userId) {
         ensureNoPendingCaptureForHistoryMutation();
         return persistenceService.clearImages(userId);
+    }
+
+    @Override
+    public MultiFrameAnalysisResponse analyzeMultiFrame(Long userId, MultiFrameAnalysisRequest request) {
+        ensureNoPendingCaptureForHistoryMutation();
+        if (request == null) {
+            throw new IllegalArgumentException("多帧检测请求不能为空");
+        }
+        return persistenceService.analyzeMultiFrame(
+                userId,
+                request.getImageIds(),
+                Boolean.TRUE.equals(request.getRepair()),
+                request.getVoteRatio() == null ? 0.6d : request.getVoteRatio());
+    }
+
+    @Override
+    public CalibrationSessionResponse generateCalibration(Long userId,
+                                                          String calibrationType,
+                                                          CalibrationRequest request) {
+        ensureNoPendingCaptureForHistoryMutation();
+        return calibrationService.generateSimulated(userId, calibrationType, request);
+    }
+
+    @Override
+    public CalibrationSessionResponse buildCalibrationFromImages(Long userId,
+                                                                  String calibrationType,
+                                                                  CalibrationRequest request) {
+        ensureNoPendingCaptureForHistoryMutation();
+        return calibrationService.buildFromImages(userId, calibrationType, request);
+    }
+
+    @Override
+    public List<CalibrationSessionResponse> listCalibrations(Long userId, String calibrationType) {
+        return calibrationService.list(userId, calibrationType);
+    }
+
+    @Override
+    public CalibrationSessionResponse getCalibration(Long userId, long sessionId) {
+        return calibrationService.get(userId, sessionId);
+    }
+
+    @Override
+    public List<CalibrationPreviewResponse> listCalibrationPreviews(Long userId,
+                                                                      long sessionId,
+                                                                      int limit) {
+        return calibrationService.listPreviews(userId, sessionId, limit);
+    }
+
+    @Override
+    public CalibrationGlobalSettingsResponse getCalibrationGlobalSettings(Long userId) {
+        return calibrationService.getGlobalSettings(userId);
+    }
+
+    @Override
+    public CalibrationGlobalSettingsResponse updateCalibrationGlobalSettings(
+            Long userId,
+            CalibrationGlobalSettingsRequest request) {
+        ensureNoPendingCaptureForHistoryMutation();
+        return calibrationService.updateGlobalSettings(userId, request);
     }
 
     /**
@@ -535,6 +645,7 @@ public class JNIServiceImpl implements JNIService {
     }
 
     private static final class PendingCapture {
+        private final Long userId;
         private final long captureId;
         private final String requestId;
         private final boolean verifyCrc;
@@ -542,7 +653,12 @@ public class JNIServiceImpl implements JNIService {
         private final long startedNanos = System.nanoTime();
         private ScheduledFuture<?> timeoutFuture;
 
-        private PendingCapture(long captureId, String requestId, boolean verifyCrc, boolean autoProcess) {
+        private PendingCapture(Long userId,
+                               long captureId,
+                               String requestId,
+                               boolean verifyCrc,
+                               boolean autoProcess) {
+            this.userId = userId;
             this.captureId = captureId;
             this.requestId = requestId;
             this.verifyCrc = verifyCrc;

@@ -7,7 +7,17 @@ import springbootjni.dto.ApiResponse;
 import springbootjni.dto.jni.BridgeConnectRequest;
 import springbootjni.dto.jni.BridgeFullConfigRequest;
 import springbootjni.dto.jni.BridgeStateResponse;
+import springbootjni.dto.jni.CalibrationRequest;
+import springbootjni.dto.jni.CalibrationGlobalSettingsRequest;
+import springbootjni.dto.jni.CalibrationGlobalSettingsResponse;
+import springbootjni.dto.jni.CalibrationPreviewResponse;
+import springbootjni.dto.jni.CalibrationSessionResponse;
 import springbootjni.dto.jni.ImageFrameResponse;
+import springbootjni.dto.jni.ImagePixelDataResponse;
+import springbootjni.dto.jni.MultiFrameAnalysisRequest;
+import springbootjni.dto.jni.MultiFrameAnalysisResponse;
+import springbootjni.dto.jni.SpectrumExtractionRequest;
+import springbootjni.dto.jni.SpectrumExtractionResponse;
 import springbootjni.dto.jni.TriggerCaptureRequest;
 import springbootjni.dto.jni.TriggerCaptureResponse;
 import springbootjni.service.JNIService;
@@ -99,6 +109,68 @@ public class JNIController {
     }
 
     /**
+     * 按需读取原始或处理后 RAW16 像素窗口。默认只返回一小块 ROI，避免前端一次加载整幅像素矩阵。
+     */
+    @GetMapping("/images/{imageId}/pixels")
+    public ApiResponse<ImagePixelDataResponse> getImagePixels(@PathVariable long imageId,
+                                                              @RequestParam(defaultValue = "ORIGINAL") String source,
+                                                              @RequestParam(defaultValue = "DN") String format,
+                                                              @RequestParam(defaultValue = "false") boolean fullFrame,
+                                                              @RequestParam(required = false) Integer xStart,
+                                                              @RequestParam(required = false) Integer yStart,
+                                                              @RequestParam(required = false) Integer width,
+                                                              @RequestParam(required = false) Integer height) {
+        try {
+            ImagePixelDataResponse pixels = jniService.getImagePixels(
+                    StpUtil.getLoginIdAsLong(),
+                    imageId,
+                    source,
+                    format,
+                    fullFrame,
+                    xStart,
+                    yStart,
+                    width,
+                    height);
+            return ApiResponse.success("Image pixels loaded successfully", pixels);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to load image pixels: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 从 PASS 图像提取一维像素域光谱。第一版输出 pixelIndex-intensity，不做 nm 波长标定。
+     */
+    @PostMapping("/images/{imageId}/spectrum/extract")
+    public ApiResponse<SpectrumExtractionResponse> extractSpectrum(
+            @PathVariable long imageId,
+            @RequestBody(required = false) SpectrumExtractionRequest request) {
+        try {
+            SpectrumExtractionResponse spectrum = jniService.extractSpectrum(
+                    StpUtil.getLoginIdAsLong(),
+                    imageId,
+                    request);
+            return ApiResponse.success("Spectrum extracted successfully", spectrum);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to extract spectrum: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 读取当前图片最近一次一维光谱提取结果；没有提取过时返回null。
+     */
+    @GetMapping("/images/{imageId}/spectrum")
+    public ApiResponse<SpectrumExtractionResponse> getLatestSpectrum(@PathVariable long imageId) {
+        try {
+            SpectrumExtractionResponse spectrum = jniService.getLatestSpectrum(
+                    StpUtil.getLoginIdAsLong(),
+                    imageId);
+            return ApiResponse.success("Latest spectrum fetched successfully", spectrum);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch latest spectrum: " + e.getMessage());
+        }
+    }
+
+    /**
      * 删除一张图片时同时删除数据库采集记录及磁盘上的原始图、预览图。
      */
     @DeleteMapping("/images/{imageId}")
@@ -121,6 +193,110 @@ public class JNIController {
             return ApiResponse.success("Image history cleared successfully", deleted);
         } catch (Exception e) {
             return ApiResponse.error("Failed to clear images: " + e.getMessage());
+        }
+    }
+
+    /** 对已保存的多张RAW图像执行多帧坏点、行列检测，并可选择写入处理结果。 */
+    @PostMapping("/images/multi-frame/analyze")
+    public ApiResponse<MultiFrameAnalysisResponse> analyzeMultiFrame(
+            @RequestBody MultiFrameAnalysisRequest request) {
+        try {
+            return ApiResponse.success(
+                    "Multi-frame image analysis completed",
+                    jniService.analyzeMultiFrame(StpUtil.getLoginIdAsLong(), request));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to analyze multi-frame images: " + e.getMessage());
+        }
+    }
+
+    /** 生成暗场/平场模拟校准数据。 */
+    @PostMapping("/calibrations/{calibrationType}/simulate")
+    public ApiResponse<CalibrationSessionResponse> simulateCalibration(
+            @PathVariable String calibrationType,
+            @RequestBody(required = false) CalibrationRequest request) {
+        try {
+            return ApiResponse.success(
+                    "Calibration simulation generated",
+                    jniService.generateCalibration(StpUtil.getLoginIdAsLong(), calibrationType, request));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to generate calibration simulation: " + e.getMessage());
+        }
+    }
+
+    /** 使用已保存的多帧图像构建暗场/平场校准数据。 */
+    @PostMapping("/calibrations/{calibrationType}/from-images")
+    public ApiResponse<CalibrationSessionResponse> buildCalibrationFromImages(
+            @PathVariable String calibrationType,
+            @RequestBody CalibrationRequest request) {
+        try {
+            return ApiResponse.success(
+                    "Calibration session saved",
+                    jniService.buildCalibrationFromImages(
+                            StpUtil.getLoginIdAsLong(), calibrationType, request));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to build calibration session: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/calibrations")
+    public ApiResponse<List<CalibrationSessionResponse>> listCalibrations(
+            @RequestParam(required = false) String type) {
+        try {
+            return ApiResponse.success(
+                    "Calibration sessions fetched",
+                    jniService.listCalibrations(StpUtil.getLoginIdAsLong(), type));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to list calibration sessions: " + e.getMessage());
+        }
+    }
+
+    /** 获取当前登录用户的暗场/平场全局启用状态。 */
+    @GetMapping("/calibrations/settings")
+    public ApiResponse<CalibrationGlobalSettingsResponse> getCalibrationGlobalSettings() {
+        try {
+            return ApiResponse.success(
+                    "Calibration global settings fetched",
+                    jniService.getCalibrationGlobalSettings(StpUtil.getLoginIdAsLong()));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch calibration global settings: " + e.getMessage());
+        }
+    }
+
+    /** 保存当前登录用户的暗场/平场全局开关。 */
+    @PutMapping("/calibrations/settings")
+    public ApiResponse<CalibrationGlobalSettingsResponse> updateCalibrationGlobalSettings(
+            @RequestBody CalibrationGlobalSettingsRequest request) {
+        try {
+            return ApiResponse.success(
+                    "Calibration global settings updated",
+                    jniService.updateCalibrationGlobalSettings(StpUtil.getLoginIdAsLong(), request));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to update calibration global settings: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/calibrations/{sessionId}")
+    public ApiResponse<CalibrationSessionResponse> getCalibration(@PathVariable long sessionId) {
+        try {
+            return ApiResponse.success(
+                    "Calibration session fetched",
+                    jniService.getCalibration(StpUtil.getLoginIdAsLong(), sessionId));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch calibration session: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/calibrations/{sessionId}/previews")
+    public ApiResponse<List<CalibrationPreviewResponse>> listCalibrationPreviews(
+            @PathVariable long sessionId,
+            @RequestParam(defaultValue = "6") int limit) {
+        try {
+            return ApiResponse.success(
+                    "Calibration previews fetched",
+                    jniService.listCalibrationPreviews(
+                            StpUtil.getLoginIdAsLong(), sessionId, limit));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch calibration previews: " + e.getMessage());
         }
     }
 

@@ -1,12 +1,25 @@
 import { jniApi } from "./jniService";
 import { useJNIStore } from "../store/jniStore";
 import type {
+    CalibrationRequest,
+    CalibrationGlobalSettingsRecord,
+    CalibrationGlobalSettingsRequest,
+    CalibrationPreviewRecord,
+    CalibrationSessionRecord,
     BridgeConnectionForm,
     BridgeConnectionState,
     ConfigAckRecord,
     ImageFrameRecord,
+    ImagePixelDataRecord,
+    ImagePixelDataRequest,
+    MultiFrameAnalysisRecord,
+    MultiFrameAnalysisRequest,
     JniEventEnvelope,
     QualityRecommendedAction,
+    SpectrumExtractionRecord,
+    SpectrumExtractionRequest,
+    SpectrumPoint,
+    SpectrumRoi,
     StatusRecord,
     TriggerCaptureOptions,
     TransportErrorRecord,
@@ -136,6 +149,14 @@ const normalizeImageFrame = (timestamp: string, payload: any): ImageFrameRecord 
             typeof payload?.qualitySummaryMessage === "string" ? payload.qualitySummaryMessage : null,
         qualityDetails:
             payload?.qualityDetails && typeof payload.qualityDetails === "object" ? payload.qualityDetails : null,
+        rawHardQualitySnapshot:
+            payload?.rawHardQualitySnapshot && typeof payload.rawHardQualitySnapshot === "object"
+                ? payload.rawHardQualitySnapshot
+                : null,
+        calibratedQualitySnapshot:
+            payload?.calibratedQualitySnapshot && typeof payload.calibratedQualitySnapshot === "object"
+                ? payload.calibratedQualitySnapshot
+                : null,
         originalQualitySnapshot:
             payload?.originalQualitySnapshot && typeof payload.originalQualitySnapshot === "object"
                 ? payload.originalQualitySnapshot
@@ -182,6 +203,90 @@ const normalizeImageFrame = (timestamp: string, payload: any): ImageFrameRecord 
             typeof payload?.processedUsableForSpectral === "boolean" ? payload.processedUsableForSpectral : null,
         processedDispositionMessage:
             typeof payload?.processedDispositionMessage === "string" ? payload.processedDispositionMessage : null,
+});
+
+const normalizePixelRows = (value: unknown): number[][] => {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.map((row) => (
+        Array.isArray(row)
+            ? row.map((pixel) => Number(pixel ?? 0))
+            : []
+    ));
+};
+
+const normalizeStringRows = (value: unknown): string[] => {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.map((row) => (typeof row === "string" ? row : String(row ?? "")));
+};
+
+const normalizeImagePixelData = (payload: any): ImagePixelDataRecord => ({
+    imageId: Number(payload?.imageId ?? 0),
+    sourceMode: typeof payload?.sourceMode === "string" ? payload.sourceMode : "ORIGINAL",
+    width: Number(payload?.width ?? 0),
+    height: Number(payload?.height ?? 0),
+    xStart: Number(payload?.xStart ?? 0),
+    yStart: Number(payload?.yStart ?? 0),
+    xEnd: Number(payload?.xEnd ?? 0),
+    yEnd: Number(payload?.yEnd ?? 0),
+    roiWidth: Number(payload?.roiWidth ?? 0),
+    roiHeight: Number(payload?.roiHeight ?? 0),
+    storageBitDepth: Number(payload?.storageBitDepth ?? 16),
+    effectiveBitDepth: Number(payload?.effectiveBitDepth ?? 12),
+    pixelFormat: typeof payload?.pixelFormat === "string" ? payload.pixelFormat : "RAW16_LOW12",
+    displayFormat: typeof payload?.displayFormat === "string" ? payload.displayFormat : "DN",
+    rawFileByteOrder: typeof payload?.rawFileByteOrder === "string" ? payload.rawFileByteOrder : "LITTLE_ENDIAN",
+    fullFrame: Boolean(payload?.fullFrame),
+    pixelMin: Number(payload?.pixelMin ?? 0),
+    pixelMax: Number(payload?.pixelMax ?? 0),
+    pixelMean: Number(payload?.pixelMean ?? 0),
+    rows: normalizePixelRows(payload?.rows),
+    hexRows: normalizeStringRows(payload?.hexRows),
+});
+
+const normalizeRoi = (value: any): SpectrumRoi => ({
+    xStart: Number(value?.xStart ?? 0),
+    xEnd: Number(value?.xEnd ?? 0),
+    yStart: Number(value?.yStart ?? 0),
+    yEnd: Number(value?.yEnd ?? 0),
+});
+
+const normalizeSpectrumPoints = (value: unknown): SpectrumPoint[] => {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.map((item: any) => ({
+        pixelIndex: Number(item?.pixelIndex ?? 0),
+        intensity: Number(item?.intensity ?? 0),
+    }));
+};
+
+const normalizeSpectrumExtraction = (payload: any): SpectrumExtractionRecord => ({
+    id: Number(payload?.id ?? 0),
+    imageId: Number(payload?.imageId ?? 0),
+    captureId: Number(payload?.captureId ?? 0),
+    sourceMode: typeof payload?.sourceMode === "string" ? payload.sourceMode : "ORIGINAL",
+    sourceQualityStatus: typeof payload?.sourceQualityStatus === "string" ? payload.sourceQualityStatus : "PASS",
+    wavelengthAxis: typeof payload?.wavelengthAxis === "string" ? payload.wavelengthAxis : "X",
+    roi: normalizeRoi(payload?.roi),
+    rectified: Boolean(payload?.rectified),
+    maxShiftPixels: Number(payload?.maxShiftPixels ?? 0),
+    shiftMin: Number(payload?.shiftMin ?? 0),
+    shiftMax: Number(payload?.shiftMax ?? 0),
+    shiftMeanAbs: Number(payload?.shiftMeanAbs ?? 0),
+    integrationMethod: typeof payload?.integrationMethod === "string" ? payload.integrationMethod : "MEAN",
+    pointCount: Number(payload?.pointCount ?? 0),
+    intensityMin: Number(payload?.intensityMin ?? 0),
+    intensityMax: Number(payload?.intensityMax ?? 0),
+    intensityMean: Number(payload?.intensityMean ?? 0),
+    points: normalizeSpectrumPoints(payload?.points),
+    algorithmVersion: typeof payload?.algorithmVersion === "string" ? payload.algorithmVersion : "",
+    summaryMessage: typeof payload?.summaryMessage === "string" ? payload.summaryMessage : "",
+    details: payload?.details && typeof payload.details === "object" ? payload.details : null,
+    createdAt: typeof payload?.createdAt === "string" ? payload.createdAt : new Date().toISOString(),
 });
 
 const handleImageFrame = (timestamp: string, payload: any): void => {
@@ -412,10 +517,73 @@ const processImage = async (imageId: number): Promise<ImageFrameRecord> => {
     return normalizedFrame;
 };
 
+const getImagePixels = async (
+    imageId: number,
+    request: ImagePixelDataRequest = {},
+): Promise<ImagePixelDataRecord> => {
+    const pixels = await jniApi.getImagePixels(imageId, request);
+    return normalizeImagePixelData(pixels);
+};
+
+const extractSpectrum = async (
+    imageId: number,
+    request: SpectrumExtractionRequest = {},
+): Promise<SpectrumExtractionRecord> => {
+    const spectrum = await jniApi.extractSpectrum(imageId, request);
+    return normalizeSpectrumExtraction(spectrum);
+};
+
+const getLatestSpectrum = async (imageId: number): Promise<SpectrumExtractionRecord | null> => {
+    const spectrum = await jniApi.getLatestSpectrum(imageId);
+    return spectrum ? normalizeSpectrumExtraction(spectrum) : null;
+};
+
 const clearImages = async (): Promise<void> => {
     await jniApi.clearImages();
     useJNIStore.getState().actions.clearImageHistory();
 };
+
+const analyzeMultiFrame = async (payload: MultiFrameAnalysisRequest): Promise<MultiFrameAnalysisRecord> => {
+    const result = await jniApi.analyzeMultiFrame(payload);
+    const normalizedFrames = (result.frames ?? []).map((frame) => normalizeImageFrame(frame.timestamp, frame));
+    if (normalizedFrames.length > 0) {
+        useJNIStore.getState().actions.replaceImageHistory(normalizedFrames);
+    }
+    return {
+        ...result,
+        frames: normalizedFrames,
+        badPixelIndexes: Array.isArray(result.badPixelIndexes) ? result.badPixelIndexes : [],
+        abnormalRows: Array.isArray(result.abnormalRows) ? result.abnormalRows : [],
+        abnormalColumns: Array.isArray(result.abnormalColumns) ? result.abnormalColumns : [],
+        analyzedImageIds: Array.isArray(result.analyzedImageIds) ? result.analyzedImageIds : [],
+        repairedImageIds: Array.isArray(result.repairedImageIds) ? result.repairedImageIds : [],
+    };
+};
+
+const simulateCalibration = async (
+    type: "DARK" | "FLAT",
+    payload?: CalibrationRequest,
+): Promise<CalibrationSessionRecord> => jniApi.simulateCalibration(type, payload);
+
+const buildCalibrationFromImages = async (
+    type: "DARK" | "FLAT",
+    payload: CalibrationRequest,
+): Promise<CalibrationSessionRecord> => jniApi.buildCalibrationFromImages(type, payload);
+
+const listCalibrations = async (type?: "DARK" | "FLAT"): Promise<CalibrationSessionRecord[]> =>
+    jniApi.listCalibrations(type);
+
+const listCalibrationPreviews = async (
+    sessionId: number,
+    limit = 6,
+): Promise<CalibrationPreviewRecord[]> => jniApi.listCalibrationPreviews(sessionId, limit);
+
+const getCalibrationGlobalSettings = async (): Promise<CalibrationGlobalSettingsRecord> =>
+    jniApi.getCalibrationGlobalSettings();
+
+const updateCalibrationGlobalSettings = async (
+    payload: CalibrationGlobalSettingsRequest,
+): Promise<CalibrationGlobalSettingsRecord> => jniApi.updateCalibrationGlobalSettings(payload);
 
 const connect = async (override?: Partial<BridgeConnectionForm>): Promise<BridgeConnectionState> => {
     await ensureWebSocket();
@@ -555,6 +723,16 @@ export const jniBridgeService = {
     queryStatusAndWait,
     sendFullConfigAndWait,
     processImage,
+    getImagePixels,
+    extractSpectrum,
+    getLatestSpectrum,
     deleteImage,
     clearImages,
+    analyzeMultiFrame,
+    simulateCalibration,
+    buildCalibrationFromImages,
+    listCalibrations,
+    listCalibrationPreviews,
+    getCalibrationGlobalSettings,
+    updateCalibrationGlobalSettings,
 };
