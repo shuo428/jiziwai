@@ -7,6 +7,8 @@ import type {
     CalibrationGlobalSettingsRequest,
     CalibrationPreviewRecord,
     CalibrationSessionRecord,
+    FpgaPayloadPixelDataRecord,
+    FpgaPayloadPixelDataRequest,
     ImageFrameRecord,
     ImagePixelDataRecord,
     ImagePixelDataRequest,
@@ -17,6 +19,8 @@ import type {
     TriggerCaptureOptions,
     TriggerCaptureResponse,
 } from "../types/jni";
+
+type CalibrationType = "DARK" | "FLAT" | "HDR_DARK" | "HDR_FLAT";
 
 export const jniApi = {
     getState: () => apiClient.get<unknown, BridgeConnectionState>("/jni/state"),
@@ -33,9 +37,16 @@ export const jniApi = {
     sendFullConfig: (configBytes: number[]) =>
         apiClient.post<unknown, string>("/jni/commands/full-config", { configBytes }),
     listImages: () => apiClient.get<unknown, ImageFrameRecord[]>("/jni/images"),
+    listHdrImages: () => apiClient.get<unknown, ImageFrameRecord[]>("/jni/hdr/images"),
+    listHdrDarkImages: () => apiClient.get<unknown, ImageFrameRecord[]>("/jni/hdr-dark/images"),
+    listHdrFlatImages: () => apiClient.get<unknown, ImageFrameRecord[]>("/jni/hdr-flat/images"),
     processImage: (imageId: number) => apiClient.post<unknown, ImageFrameRecord>(`/jni/images/${imageId}/process`),
     getImagePixels: (imageId: number, payload?: ImagePixelDataRequest) =>
         apiClient.get<unknown, ImagePixelDataRecord>(`/jni/images/${imageId}/pixels`, {
+            params: payload,
+        }),
+    getFpgaPayloadPixels: (imageId: number, payload?: FpgaPayloadPixelDataRequest) =>
+        apiClient.get<unknown, FpgaPayloadPixelDataRecord>(`/jni/images/${imageId}/fpga-payload`, {
             params: payload,
         }),
     getLatestSpectrum: (imageId: number) =>
@@ -46,21 +57,27 @@ export const jniApi = {
     clearImages: () => apiClient.delete<unknown, number>("/jni/images"),
     analyzeMultiFrame: (payload: MultiFrameAnalysisRequest) =>
         apiClient.post<unknown, MultiFrameAnalysisRecord>("/jni/images/multi-frame/analyze", payload),
-    simulateCalibration: (type: "DARK" | "FLAT", payload?: CalibrationRequest) =>
+    simulateCalibration: (type: CalibrationType, payload?: CalibrationRequest) =>
         apiClient.post<unknown, CalibrationSessionRecord>(`/jni/calibrations/${type}/simulate`, payload ?? {}),
-    buildCalibrationFromImages: (type: "DARK" | "FLAT", payload: CalibrationRequest) =>
+    buildCalibrationFromImages: (type: CalibrationType, payload: CalibrationRequest) =>
         apiClient.post<unknown, CalibrationSessionRecord>(`/jni/calibrations/${type}/from-images`, payload),
-    listCalibrations: (type?: "DARK" | "FLAT") =>
+    listCalibrations: (type?: CalibrationType) =>
         apiClient.get<unknown, CalibrationSessionRecord[]>(
             "/jni/calibrations",
             type ? { params: { type } } : undefined,
         ),
     getCalibration: (sessionId: number) =>
         apiClient.get<unknown, CalibrationSessionRecord>(`/jni/calibrations/${sessionId}`),
-    listCalibrationPreviews: (sessionId: number, limit = 6) =>
+    deleteCalibration: (sessionId: number) =>
+        apiClient.delete<unknown, boolean>(`/jni/calibrations/${sessionId}`),
+    listCalibrationPreviews: (sessionId: number, limit = 0) =>
         apiClient.get<unknown, CalibrationPreviewRecord[]>(`/jni/calibrations/${sessionId}/previews`, {
             params: { limit },
         }),
+    getCalibrationReferencePreview: (sessionId: number) =>
+        apiClient.get<unknown, CalibrationPreviewRecord | null>(`/jni/calibrations/${sessionId}/reference-preview`),
+    listCalibrationReferencePreviews: (sessionId: number) =>
+        apiClient.get<unknown, CalibrationPreviewRecord[]>(`/jni/calibrations/${sessionId}/reference-previews`),
     getCalibrationGlobalSettings: () =>
         apiClient.get<unknown, CalibrationGlobalSettingsRecord>("/jni/calibrations/settings"),
     updateCalibrationGlobalSettings: (payload: CalibrationGlobalSettingsRequest) =>

@@ -9,6 +9,9 @@ import type {
     BridgeConnectionForm,
     BridgeConnectionState,
     ConfigAckRecord,
+    FpgaPayloadPixelDataRecord,
+    FpgaPayloadPixelDataRequest,
+    FpgaPayloadPixelRecord,
     ImageFrameRecord,
     ImagePixelDataRecord,
     ImagePixelDataRequest,
@@ -24,6 +27,8 @@ import type {
     TriggerCaptureOptions,
     TransportErrorRecord,
 } from "../types/jni";
+
+type CalibrationType = "DARK" | "FLAT" | "HDR_DARK" | "HDR_FLAT";
 
 type PendingRequest<T> = {
     timeoutId: number;
@@ -44,6 +49,13 @@ const normalizeState = (state: Partial<BridgeConnectionState>): Partial<BridgeCo
     controlPort: typeof state.controlPort === "number" ? state.controlPort : 0,
     imagePort: typeof state.imagePort === "number" ? state.imagePort : 0,
     verifyCrc: typeof state.verifyCrc === "boolean" ? state.verifyCrc : true,
+    expectedWidth: typeof state.expectedWidth === "number" ? state.expectedWidth : 800,
+    expectedHeight: typeof state.expectedHeight === "number" ? state.expectedHeight : 600,
+    pixelFormat: typeof state.pixelFormat === "string" ? state.pixelFormat : "RAW16_LOW12",
+    readoutOrder:
+        typeof state.readoutOrder === "string"
+            ? state.readoutOrder
+            : "GLUX1605_HDR_4LANE_INTERLEAVED_EFFECTIVE",
     connected: Boolean(state.connected),
     lastError: state.lastError ?? null,
     message: state.message ?? null,
@@ -122,6 +134,7 @@ const normalizeImageFrame = (timestamp: string, payload: any): ImageFrameRecord 
         id: Number(payload?.id ?? 0),
         captureId: Number(payload?.captureId ?? 0),
         requestId: typeof payload?.requestId === "string" ? payload.requestId : "",
+        captureScene: typeof payload?.captureScene === "string" ? payload.captureScene : "NORMAL",
         timestamp: typeof payload?.timestamp === "string" ? payload.timestamp : timestamp,
         width: Number(payload?.width ?? 0),
         height: Number(payload?.height ?? 0),
@@ -129,7 +142,29 @@ const normalizeImageFrame = (timestamp: string, payload: any): ImageFrameRecord 
         raw16Length: Number(payload?.raw16Length ?? 0),
         payloadLength: Number(payload?.payloadLength ?? 0),
         pixelFormat: typeof payload?.pixelFormat === "string" ? payload.pixelFormat : "RAW16_LOW12",
+        fpgaPayloadStorageUri:
+            typeof payload?.fpgaPayloadStorageUri === "string" ? payload.fpgaPayloadStorageUri : null,
+        fpgaPayloadSha256:
+            typeof payload?.fpgaPayloadSha256 === "string" ? payload.fpgaPayloadSha256 : null,
+        readoutOrder: typeof payload?.readoutOrder === "string" ? payload.readoutOrder : null,
+        hgRawStorageUri: typeof payload?.hgRawStorageUri === "string" ? payload.hgRawStorageUri : null,
+        lgRawStorageUri: typeof payload?.lgRawStorageUri === "string" ? payload.lgRawStorageUri : null,
+        hgPreviewStorageUri:
+            typeof payload?.hgPreviewStorageUri === "string" ? payload.hgPreviewStorageUri : null,
+        lgPreviewStorageUri:
+            typeof payload?.lgPreviewStorageUri === "string" ? payload.lgPreviewStorageUri : null,
+        hdrFusionMaskStorageUri:
+            typeof payload?.hdrFusionMaskStorageUri === "string" ? payload.hdrFusionMaskStorageUri : null,
+        hdrGainRatio: typeof payload?.hdrGainRatio === "number" ? payload.hdrGainRatio : null,
+        hdrFusionDetails:
+            payload?.hdrFusionDetails && typeof payload.hdrFusionDetails === "object"
+                ? payload.hdrFusionDetails
+                : null,
         imageDataUrl: typeof payload?.imageDataUrl === "string" ? payload.imageDataUrl : "",
+        hgImageDataUrl: typeof payload?.hgImageDataUrl === "string" ? payload.hgImageDataUrl : "",
+        lgImageDataUrl: typeof payload?.lgImageDataUrl === "string" ? payload.lgImageDataUrl : "",
+        calibratedImageDataUrl:
+            typeof payload?.calibratedImageDataUrl === "string" ? payload.calibratedImageDataUrl : "",
         integrityPassed: typeof payload?.integrityPassed === "boolean" ? payload.integrityPassed : null,
         integrityResultCode:
             typeof payload?.integrityResultCode === "string" ? payload.integrityResultCode : null,
@@ -223,15 +258,62 @@ const normalizeStringRows = (value: unknown): string[] => {
     return value.map((row) => (typeof row === "string" ? row : String(row ?? "")));
 };
 
+const numberFromAliases = (payload: any, aliases: string[], fallback = 0): number => {
+    for (const alias of aliases) {
+        const value = payload?.[alias];
+        if (value !== undefined && value !== null) {
+            return Number(value);
+        }
+    }
+    return fallback;
+};
+
+const isRowMajorReadoutOrder = (readoutOrder?: unknown): boolean =>
+    typeof readoutOrder === "string" && readoutOrder.toUpperCase() === "ROW_MAJOR";
+
+const fallbackImagePixelSourceLabel = (payload: any): string => {
+    const rowMajor = isRowMajorReadoutOrder(payload?.readoutOrder);
+    if (payload?.sourceMode === "PROCESSED") {
+        return rowMajor ? "处理后 RAW16（正常行列）" : "处理后 RAW16（已重排）";
+    }
+    if (payload?.sourceMode === "CALIBRATED") {
+        return rowMajor ? "校准后 RAW16（正常行列）" : "校准后 RAW16（已重排）";
+    }
+    return rowMajor ? "原图 RAW16（正常行列）" : "重排后原图 RAW16";
+};
+
+const fallbackImagePixelSpatialOrder = (payload: any): string =>
+    isRowMajorReadoutOrder(payload?.readoutOrder)
+        ? "ROW_MAJOR_NORMAL_IMAGE_ORDER"
+        : "ROW_MAJOR_AFTER_SENSOR_READOUT_REORDER";
+
+const fallbackImagePixelSourceDescription = (payload: any): string =>
+    isRowMajorReadoutOrder(payload?.readoutOrder)
+        ? "当前 RAW16 像素保持 FPGA 输出的正常行列坐标，用于质量分析、图像处理和光谱提取。"
+        : "当前 RAW16 像素已经按芯片读出顺序转换为正常行列坐标，不是 FPGA 原始 payload 顺序。";
+
 const normalizeImagePixelData = (payload: any): ImagePixelDataRecord => ({
     imageId: Number(payload?.imageId ?? 0),
     sourceMode: typeof payload?.sourceMode === "string" ? payload.sourceMode : "ORIGINAL",
+    sourceLabel:
+        typeof payload?.sourceLabel === "string"
+            ? payload.sourceLabel
+            : fallbackImagePixelSourceLabel(payload),
+    spatialOrder:
+        typeof payload?.spatialOrder === "string"
+            ? payload.spatialOrder
+            : fallbackImagePixelSpatialOrder(payload),
+    readoutOrder: typeof payload?.readoutOrder === "string" ? payload.readoutOrder : "",
+    sourceDescription:
+        typeof payload?.sourceDescription === "string"
+            ? payload.sourceDescription
+            : fallbackImagePixelSourceDescription(payload),
     width: Number(payload?.width ?? 0),
     height: Number(payload?.height ?? 0),
-    xStart: Number(payload?.xStart ?? 0),
-    yStart: Number(payload?.yStart ?? 0),
-    xEnd: Number(payload?.xEnd ?? 0),
-    yEnd: Number(payload?.yEnd ?? 0),
+    xStart: numberFromAliases(payload, ["xStart", "xstart", "XStart"]),
+    yStart: numberFromAliases(payload, ["yStart", "ystart", "YStart"]),
+    xEnd: numberFromAliases(payload, ["xEnd", "xend", "XEnd"]),
+    yEnd: numberFromAliases(payload, ["yEnd", "yend", "YEnd"]),
     roiWidth: Number(payload?.roiWidth ?? 0),
     roiHeight: Number(payload?.roiHeight ?? 0),
     storageBitDepth: Number(payload?.storageBitDepth ?? 16),
@@ -247,11 +329,64 @@ const normalizeImagePixelData = (payload: any): ImagePixelDataRecord => ({
     hexRows: normalizeStringRows(payload?.hexRows),
 });
 
+const normalizeFpgaPayloadPixels = (value: unknown): FpgaPayloadPixelRecord[] => {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.map((item: any) => ({
+        payloadIndex: Number(item?.payloadIndex ?? 0),
+        plane: typeof item?.plane === "string" ? item.plane : "SINGLE",
+        planePixelIndex: Number(item?.planePixelIndex ?? item?.payloadIndex ?? 0),
+        payloadRow: Number(item?.payloadRow ?? 0),
+        payloadColumn: Number(item?.payloadColumn ?? 0),
+        lane: Number(item?.lane ?? 0),
+        sample: Number(item?.sample ?? 0),
+        imageX: Number(item?.imageX ?? 0),
+        imageY: Number(item?.imageY ?? 0),
+        hexWord: typeof item?.hexWord === "string" ? item.hexWord : "",
+        hexFileBytes: typeof item?.hexFileBytes === "string" ? item.hexFileBytes : "",
+        dn: Number(item?.dn ?? 0),
+        raw16Value: Number(item?.raw16Value ?? 0),
+    }));
+};
+
+const normalizeFpgaPayloadData = (payload: any): FpgaPayloadPixelDataRecord => ({
+    imageId: Number(payload?.imageId ?? 0),
+    width: Number(payload?.width ?? 0),
+    height: Number(payload?.height ?? 0),
+    pixelFormat: typeof payload?.pixelFormat === "string" ? payload.pixelFormat : "RAW16_LOW12",
+    readoutOrder: typeof payload?.readoutOrder === "string" ? payload.readoutOrder : "",
+    payloadStorageUri: typeof payload?.payloadStorageUri === "string" ? payload.payloadStorageUri : null,
+    payloadSha256: typeof payload?.payloadSha256 === "string" ? payload.payloadSha256 : null,
+    rawFileByteOrder: typeof payload?.rawFileByteOrder === "string" ? payload.rawFileByteOrder : "LITTLE_ENDIAN",
+    storageBitDepth: Number(payload?.storageBitDepth ?? 16),
+    effectiveBitDepth: Number(payload?.effectiveBitDepth ?? 12),
+    laneCount: Number(payload?.laneCount ?? 1),
+    laneWidth: Number(payload?.laneWidth ?? 0),
+    payloadPlaneCount: Number(payload?.payloadPlaneCount ?? 1),
+    payloadPixelCount: Number(payload?.payloadPixelCount ?? 0),
+    payloadStart: Number(payload?.payloadStart ?? 0),
+    payloadEnd: Number(payload?.payloadEnd ?? 0),
+    returnedCount: Number(payload?.returnedCount ?? 0),
+    maxWindowCount: Number(payload?.maxWindowCount ?? 4096),
+    fullFrame: Boolean(payload?.fullFrame),
+    displayFormat: typeof payload?.displayFormat === "string" ? payload.displayFormat : "HEX_WORD",
+    pixelMin: Number(payload?.pixelMin ?? 0),
+    pixelMax: Number(payload?.pixelMax ?? 0),
+    pixelMean: Number(payload?.pixelMean ?? 0),
+    sourceDescription:
+        typeof payload?.sourceDescription === "string"
+            ? payload.sourceDescription
+            : "当前数据来自 fpga_payload.bin，是 FPGA 直接输出的有效像素顺序。",
+    hexRows: normalizeStringRows(payload?.hexRows),
+    pixels: normalizeFpgaPayloadPixels(payload?.pixels),
+});
+
 const normalizeRoi = (value: any): SpectrumRoi => ({
-    xStart: Number(value?.xStart ?? 0),
-    xEnd: Number(value?.xEnd ?? 0),
-    yStart: Number(value?.yStart ?? 0),
-    yEnd: Number(value?.yEnd ?? 0),
+    xStart: numberFromAliases(value, ["xStart", "xstart", "XStart"]),
+    xEnd: numberFromAliases(value, ["xEnd", "xend", "XEnd"]),
+    yStart: numberFromAliases(value, ["yStart", "ystart", "YStart"]),
+    yEnd: numberFromAliases(value, ["yEnd", "yend", "YEnd"]),
 });
 
 const normalizeSpectrumPoints = (value: unknown): SpectrumPoint[] => {
@@ -291,7 +426,11 @@ const normalizeSpectrumExtraction = (payload: any): SpectrumExtractionRecord => 
 
 const handleImageFrame = (timestamp: string, payload: any): void => {
     const frame = normalizeImageFrame(timestamp, payload);
-    useJNIStore.getState().actions.pushImageFrame(frame);
+    if (frame.captureScene === "NORMAL") {
+        useJNIStore.getState().actions.pushImageFrame(frame);
+    } else if (frame.captureScene === "HDR") {
+        useJNIStore.getState().actions.pushHdrImageFrame(frame);
+    }
     if (pendingFrame) {
         clearPendingRequest(pendingFrame);
         pendingFrame.resolve(frame);
@@ -503,6 +642,23 @@ const loadImageHistory = async (): Promise<ImageFrameRecord[]> => {
     return normalizedFrames;
 };
 
+const loadHdrImageHistory = async (): Promise<ImageFrameRecord[]> => {
+    const frames = await jniApi.listHdrImages();
+    const normalizedFrames = frames.map((frame) => normalizeImageFrame(frame.timestamp, frame));
+    useJNIStore.getState().actions.replaceHdrImageHistory(normalizedFrames);
+    return normalizedFrames;
+};
+
+const loadHdrDarkImageHistory = async (): Promise<ImageFrameRecord[]> => {
+    const frames = await jniApi.listHdrDarkImages();
+    return frames.map((frame) => normalizeImageFrame(frame.timestamp, frame));
+};
+
+const loadHdrFlatImageHistory = async (): Promise<ImageFrameRecord[]> => {
+    const frames = await jniApi.listHdrFlatImages();
+    return frames.map((frame) => normalizeImageFrame(frame.timestamp, frame));
+};
+
 const deleteImage = async (imageId: number): Promise<void> => {
     const deleted = await jniApi.deleteImage(imageId);
     if (deleted) {
@@ -513,7 +669,11 @@ const deleteImage = async (imageId: number): Promise<void> => {
 const processImage = async (imageId: number): Promise<ImageFrameRecord> => {
     const frame = await jniApi.processImage(imageId);
     const normalizedFrame = normalizeImageFrame(frame.timestamp, frame);
-    useJNIStore.getState().actions.pushImageFrame(normalizedFrame);
+    if (normalizedFrame.captureScene === "NORMAL") {
+        useJNIStore.getState().actions.pushImageFrame(normalizedFrame);
+    } else if (normalizedFrame.captureScene === "HDR") {
+        useJNIStore.getState().actions.pushHdrImageFrame(normalizedFrame);
+    }
     return normalizedFrame;
 };
 
@@ -523,6 +683,14 @@ const getImagePixels = async (
 ): Promise<ImagePixelDataRecord> => {
     const pixels = await jniApi.getImagePixels(imageId, request);
     return normalizeImagePixelData(pixels);
+};
+
+const getFpgaPayloadPixels = async (
+    imageId: number,
+    request: FpgaPayloadPixelDataRequest = {},
+): Promise<FpgaPayloadPixelDataRecord> => {
+    const pixels = await jniApi.getFpgaPayloadPixels(imageId, request);
+    return normalizeFpgaPayloadData(pixels);
 };
 
 const extractSpectrum = async (
@@ -561,22 +729,33 @@ const analyzeMultiFrame = async (payload: MultiFrameAnalysisRequest): Promise<Mu
 };
 
 const simulateCalibration = async (
-    type: "DARK" | "FLAT",
+    type: CalibrationType,
     payload?: CalibrationRequest,
 ): Promise<CalibrationSessionRecord> => jniApi.simulateCalibration(type, payload);
 
 const buildCalibrationFromImages = async (
-    type: "DARK" | "FLAT",
+    type: CalibrationType,
     payload: CalibrationRequest,
 ): Promise<CalibrationSessionRecord> => jniApi.buildCalibrationFromImages(type, payload);
 
-const listCalibrations = async (type?: "DARK" | "FLAT"): Promise<CalibrationSessionRecord[]> =>
+const listCalibrations = async (type?: CalibrationType): Promise<CalibrationSessionRecord[]> =>
     jniApi.listCalibrations(type);
 
 const listCalibrationPreviews = async (
     sessionId: number,
-    limit = 6,
+    limit = 0,
 ): Promise<CalibrationPreviewRecord[]> => jniApi.listCalibrationPreviews(sessionId, limit);
+
+const getCalibrationReferencePreview = async (
+    sessionId: number,
+): Promise<CalibrationPreviewRecord | null> => jniApi.getCalibrationReferencePreview(sessionId);
+
+const listCalibrationReferencePreviews = async (
+    sessionId: number,
+): Promise<CalibrationPreviewRecord[]> => jniApi.listCalibrationReferencePreviews(sessionId);
+
+const deleteCalibration = async (sessionId: number): Promise<boolean> =>
+    jniApi.deleteCalibration(sessionId);
 
 const getCalibrationGlobalSettings = async (): Promise<CalibrationGlobalSettingsRecord> =>
     jniApi.getCalibrationGlobalSettings();
@@ -602,6 +781,21 @@ const connect = async (override?: Partial<BridgeConnectionForm>): Promise<Bridge
     }
     if (payload.imagePort < 1 || payload.imagePort > 65535) {
         throw new Error("imagePort 必须在 1 到 65535 之间");
+    }
+    if (!Number.isInteger(payload.expectedWidth) || payload.expectedWidth < 1) {
+        throw new Error("图像宽度必须是大于 0 的整数");
+    }
+    if (!Number.isInteger(payload.expectedHeight) || payload.expectedHeight < 1) {
+        throw new Error("图像高度必须是大于 0 的整数");
+    }
+    if (payload.readoutOrder === "GLUX1605_HDR_4LANE_INTERLEAVED_EFFECTIVE" && payload.expectedWidth % 4 !== 0) {
+        throw new Error("GLUX1605 HDR 4-lane 读出要求图像宽度能被 4 整除");
+    }
+    if (payload.pixelFormat !== "RAW16_LOW12") {
+        throw new Error("当前仅支持 RAW16_LOW12 像素格式");
+    }
+    if (!["GLUX1605_HDR_4LANE_INTERLEAVED_EFFECTIVE", "ROW_MAJOR"].includes(payload.readoutOrder)) {
+        throw new Error("当前仅支持 GLUX1605 HDR 4-lane 或 ROW_MAJOR 读出顺序");
     }
 
     const state = await jniApi.connect(payload);
@@ -716,6 +910,9 @@ const sendFullConfigAndWait = async (configBytes: number[], timeoutMs = 10000): 
 export const jniBridgeService = {
     initialize,
     loadImageHistory,
+    loadHdrImageHistory,
+    loadHdrDarkImageHistory,
+    loadHdrFlatImageHistory,
     connect,
     disconnect,
     sendReset,
@@ -724,6 +921,7 @@ export const jniBridgeService = {
     sendFullConfigAndWait,
     processImage,
     getImagePixels,
+    getFpgaPayloadPixels,
     extractSpectrum,
     getLatestSpectrum,
     deleteImage,
@@ -733,6 +931,9 @@ export const jniBridgeService = {
     buildCalibrationFromImages,
     listCalibrations,
     listCalibrationPreviews,
+    getCalibrationReferencePreview,
+    listCalibrationReferencePreviews,
+    deleteCalibration,
     getCalibrationGlobalSettings,
     updateCalibrationGlobalSettings,
 };

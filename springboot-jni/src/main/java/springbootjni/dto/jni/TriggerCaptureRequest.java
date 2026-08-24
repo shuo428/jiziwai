@@ -16,4 +16,6 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class TriggerCaptureRequest {
     private Boolean autoProcess;
+    /** NORMAL 为普通光谱采集；HDR 为双增益采集；DARK/FLAT 为普通校准样本采集；HDR_DARK/HDR_FLAT 为 HDR 双平面校准样本采集。 */
+    private String captureScene;
 }

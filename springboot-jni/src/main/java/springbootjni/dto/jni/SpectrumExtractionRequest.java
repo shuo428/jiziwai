@@ -11,7 +11,7 @@ import lombok.Data;
  */
 @Data
 public class SpectrumExtractionRequest {
-    /** AUTO 优先使用处理后 PASS 图；ORIGINAL 只使用原图；PROCESSED 只使用处理后图。 */
+    /** AUTO 优先使用处理后 PASS 图，其次校准后 PASS 图；ORIGINAL/CALIBRATED/PROCESSED 可指定图像版本。 */
     private String sourceMode;
 
     /** AUTO 自动判断波长方向；X 表示横向为波长方向；Y 表示纵向为波长方向。 */

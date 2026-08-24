@@ -3,6 +3,10 @@ export interface BridgeConnectionForm {
     controlPort: number;
     imagePort: number;
     verifyCrc: boolean;
+    expectedWidth: number;
+    expectedHeight: number;
+    pixelFormat: string;
+    readoutOrder: string;
 }
 
 export interface BridgeConnectionState extends BridgeConnectionForm {
@@ -25,6 +29,7 @@ export interface ImageFrameRecord {
     id: number;
     captureId: number;
     requestId: string;
+    captureScene: string;
     timestamp: string;
     width: number;
     height: number;
@@ -32,7 +37,20 @@ export interface ImageFrameRecord {
     raw16Length: number;
     payloadLength: number;
     pixelFormat: string;
+    fpgaPayloadStorageUri: string | null;
+    fpgaPayloadSha256: string | null;
+    readoutOrder: string | null;
+    hgRawStorageUri: string | null;
+    lgRawStorageUri: string | null;
+    hgPreviewStorageUri: string | null;
+    lgPreviewStorageUri: string | null;
+    hdrFusionMaskStorageUri: string | null;
+    hdrGainRatio: number | null;
+    hdrFusionDetails: Record<string, unknown> | null;
     imageDataUrl: string;
+    hgImageDataUrl: string;
+    lgImageDataUrl: string;
+    calibratedImageDataUrl: string;
     integrityPassed: boolean | null;
     integrityResultCode: string | null;
     qualityStatus: string | null;
@@ -77,7 +95,7 @@ export interface ImageFrameRecord {
     processedDispositionMessage: string | null;
 }
 
-export type ImagePixelSourceMode = "ORIGINAL" | "PROCESSED";
+export type ImagePixelSourceMode = "ORIGINAL" | "CALIBRATED" | "PROCESSED";
 export type ImagePixelDisplayFormat = "DN" | "HEX_WORD" | "HEX_FILE";
 
 export interface ImagePixelDataRequest {
@@ -93,6 +111,10 @@ export interface ImagePixelDataRequest {
 export interface ImagePixelDataRecord {
     imageId: number;
     sourceMode: ImagePixelSourceMode | string;
+    sourceLabel: string;
+    spatialOrder: string;
+    readoutOrder: string;
+    sourceDescription: string;
     width: number;
     height: number;
     xStart: number;
@@ -114,6 +136,57 @@ export interface ImagePixelDataRecord {
     hexRows: string[];
 }
 
+export interface FpgaPayloadPixelDataRequest {
+    start?: number;
+    count?: number;
+    fullFrame?: boolean;
+}
+
+export interface FpgaPayloadPixelRecord {
+    payloadIndex: number;
+    plane?: string;
+    planePixelIndex?: number;
+    payloadRow: number;
+    payloadColumn: number;
+    lane: number;
+    sample: number;
+    imageX: number;
+    imageY: number;
+    hexWord: string;
+    hexFileBytes: string;
+    dn: number;
+    raw16Value: number;
+}
+
+export interface FpgaPayloadPixelDataRecord {
+    imageId: number;
+    width: number;
+    height: number;
+    pixelFormat: string;
+    readoutOrder: string;
+    payloadStorageUri: string | null;
+    payloadSha256: string | null;
+    rawFileByteOrder: string;
+    storageBitDepth: number;
+    effectiveBitDepth: number;
+    laneCount: number;
+    laneWidth: number;
+    payloadPlaneCount?: number;
+    payloadPixelCount: number;
+    payloadStart: number;
+    payloadEnd: number;
+    returnedCount: number;
+    maxWindowCount: number;
+    fullFrame: boolean;
+    displayFormat: string;
+    pixelMin: number;
+    pixelMax: number;
+    pixelMean: number;
+    sourceDescription: string;
+    hexRows: string[];
+    pixels: FpgaPayloadPixelRecord[];
+}
+
 export interface TriggerCaptureResponse {
     captureId: number;
     requestId: string;
@@ -121,6 +194,17 @@ export interface TriggerCaptureResponse {
 
 export interface TriggerCaptureOptions {
     autoProcess: boolean;
+    captureScene?:
+        | "NORMAL"
+        | "DARK"
+        | "FLAT"
+        | "HDR"
+        | "HDR_DARK"
+        | "HDR_FLAT"
+        | "CALIBRATION_DARK"
+        | "CALIBRATION_FLAT"
+        | "CALIBRATION_HDR_DARK"
+        | "CALIBRATION_HDR_FLAT";
 }
 
 export interface CalibrationRequest {
@@ -133,7 +217,7 @@ export interface CalibrationRequest {
 export interface CalibrationSessionRecord {
     id: number;
     sessionNumber: number;
-    calibrationType: "DARK" | "FLAT";
+    calibrationType: "DARK" | "FLAT" | "HDR_DARK" | "HDR_FLAT";
     acquisitionMode: string;
     status: string;
     expectedFrameCount: number;
@@ -153,6 +237,8 @@ export interface CalibrationSessionRecord {
 
 export interface CalibrationPreviewRecord {
     frameIndex: number;
+    previewType?: "SAMPLE" | "HG_SAMPLE" | "LG_SAMPLE" | "REFERENCE" | "HG_REFERENCE" | "LG_REFERENCE";
+    label?: string | null;
     imageDataUrl: string;
     storageUri: string | null;
 }
@@ -165,10 +251,18 @@ export interface CalibrationGlobalSettingsRecord {
     defectMapEnabled: boolean;
     calibrationPackageReady: boolean;
     defectMapAvailable: boolean;
+    hdrEnabled: boolean;
+    hdrDarkCalibrationId: number | null;
+    hdrFlatCalibrationId: number | null;
+    hdrDefectMapEnabled: boolean;
+    hdrCalibrationPackageReady: boolean;
+    hdrDefectMapAvailable: boolean;
     width: number | null;
     height: number | null;
     darkReferenceAvailable: boolean;
     flatReferenceAvailable: boolean;
+    hdrDarkReferenceAvailable: boolean;
+    hdrFlatReferenceAvailable: boolean;
     updatedAt: string | null;
     message: string;
 }
@@ -178,6 +272,10 @@ export interface CalibrationGlobalSettingsRequest {
     darkCalibrationId: number | null;
     flatCalibrationId: number | null;
     defectMapEnabled: boolean;
+    hdrEnabled?: boolean;
+    hdrDarkCalibrationId?: number | null;
+    hdrFlatCalibrationId?: number | null;
+    hdrDefectMapEnabled?: boolean;
 }
 
 export interface MultiFrameAnalysisRequest {
@@ -213,7 +311,7 @@ export interface SpectrumRoi {
 }
 
 export interface SpectrumExtractionRequest {
-    sourceMode?: "AUTO" | "ORIGINAL" | "PROCESSED";
+    sourceMode?: "AUTO" | "ORIGINAL" | "CALIBRATED" | "PROCESSED";
     wavelengthAxis?: "AUTO" | "X" | "Y";
     rectifyTilt?: boolean;
     maxShiftPixels?: number;

@@ -7,6 +7,9 @@ import RegisterPage from "../pages/Register";
 import ProfilePage from "../pages/Profile";
 import ChatPage from "../pages/Chat";
 import CalibrationPage from "../pages/Calibration";
+import ConfigManagementPage from "../pages/ConfigManagement";
+import HdrCapturePage from "../pages/HdrCapture";
+import HdrDarkCapturePage from "../pages/HdrDarkCapture";
 import ProtectedRoute from "../components/ProtectedRoute";
 import Layout from "../components/Layout";
 
@@ -41,10 +44,42 @@ export default function AppRouter() {
                     }
                 />
                 <Route
+                    path="/hdr-capture"
+                    element={
+                        <ProtectedRoute>
+                            <HdrCapturePage />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/hdr-dark-capture"
+                    element={
+                        <ProtectedRoute>
+                            <HdrDarkCapturePage />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/config-management"
+                    element={
+                        <ProtectedRoute>
+                            <ConfigManagementPage />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
                     path="/spectral-management"
                     element={
                         <ProtectedRoute>
-                            <SpectralDataManagementPage />
+                            <SpectralDataManagementPage scene="NORMAL" />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/hdr-management"
+                    element={
+                        <ProtectedRoute>
+                            <SpectralDataManagementPage scene="HDR" />
                         </ProtectedRoute>
                     }
                 />
@@ -52,7 +87,15 @@ export default function AppRouter() {
                     path="/calibration"
                     element={
                         <ProtectedRoute>
-                            <CalibrationPage />
+                            <CalibrationPage mode="NORMAL" />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/hdr-calibration"
+                    element={
+                        <ProtectedRoute>
+                            <CalibrationPage mode="HDR" />
                         </ProtectedRoute>
                     }
                 />

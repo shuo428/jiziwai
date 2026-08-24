@@ -7,6 +7,7 @@ import springbootjni.dto.jni.CalibrationGlobalSettingsRequest;
 import springbootjni.dto.jni.CalibrationGlobalSettingsResponse;
 import springbootjni.dto.jni.CalibrationPreviewResponse;
 import springbootjni.dto.jni.CalibrationSessionResponse;
+import springbootjni.dto.jni.FpgaPayloadPixelDataResponse;
 import springbootjni.dto.jni.ImageFrameResponse;
 import springbootjni.dto.jni.ImagePixelDataResponse;
 import springbootjni.dto.jni.MultiFrameAnalysisRequest;
@@ -26,13 +27,15 @@ public interface JNIService {
 
     void sendReset();
 
-    TriggerCaptureResponse sendTriggerOnce(Long userId, boolean autoProcess);
+    TriggerCaptureResponse sendTriggerOnce(Long userId, boolean autoProcess, String captureScene);
 
     void sendQueryStatus();
 
     void sendFullConfig(List<Integer> configBytes);
 
-    void handleImageFrame(int width, int height, short[] pixels16, byte[] pixels8);
+    void handleImageFrame(int width, int height, short[] pixels16, byte[] pixels8, byte[] fpgaPayload);
+
+    void handleHdrImageFrame(int width, int height, short[] hgPixels16, short[] lgPixels16, byte[] fpgaPayload);
 
     void handleStatus(int statusBits, int errorCode);
 
@@ -41,6 +44,12 @@ public interface JNIService {
     void handleTransportError(String channel, String message);
 
     List<ImageFrameResponse> listImages(Long userId);
+
+    List<ImageFrameResponse> listHdrImages(Long userId);
+
+    List<ImageFrameResponse> listHdrDarkImages(Long userId);
+
+    List<ImageFrameResponse> listHdrFlatImages(Long userId);
 
     ImageFrameResponse processImage(Long userId, long imageId);
 
@@ -53,6 +62,12 @@ public interface JNIService {
                                           Integer yStart,
                                           Integer width,
                                           Integer height);
+
+    FpgaPayloadPixelDataResponse getFpgaPayloadPixels(Long userId,
+                                                      long imageId,
+                                                      Integer start,
+                                                      Integer count,
+                                                      boolean fullFrame);
 
     SpectrumExtractionResponse extractSpectrum(Long userId, long imageId, SpectrumExtractionRequest request);
 
@@ -73,6 +88,12 @@ public interface JNIService {
     CalibrationSessionResponse getCalibration(Long userId, long sessionId);
 
     List<CalibrationPreviewResponse> listCalibrationPreviews(Long userId, long sessionId, int limit);
+
+    CalibrationPreviewResponse getCalibrationReferencePreview(Long userId, long sessionId);
+
+    List<CalibrationPreviewResponse> listCalibrationReferencePreviews(Long userId, long sessionId);
+
+    boolean deleteCalibration(Long userId, long sessionId);
 
     CalibrationGlobalSettingsResponse getCalibrationGlobalSettings(Long userId);
 

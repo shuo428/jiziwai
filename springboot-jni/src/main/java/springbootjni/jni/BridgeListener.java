@@ -14,8 +14,27 @@ public interface BridgeListener {
      *                 当前协议下每个元素只有低 12 位是有效像素值，范围 0~4095。
      * @param pixels8  8 位灰度数组，长度应为 width * height。
      *                 这是 native 侧把低 12 位有效值缩放到 0~255 后得到的显示图。
+     * @param fpgaPayload FPGA 图像通道直接收到的原始有效像素 payload。
+     *                    它保持 FPGA/芯片读出顺序，不经过 GLUX1605BSI lane 重排，
+     *                    仅用于追溯、回放和验证重排算法。
      */
-    void onImageFrame(int width, int height, short[] pixels16, byte[] pixels8);
+    void onImageFrame(int width, int height, short[] pixels16, byte[] pixels8, byte[] fpgaPayload);
+
+    /**
+     * 收到 HDR 双增益图像后的回调。
+     *
+     * <p>当前 FPGA/上位机约定一次触发返回一个双平面 payload：
+     * 前半段为完整 HG 平面，后半段为完整 LG 平面。native 已经分别完成
+     * GLUX1605BSI HDR 4-lane 有效像素重排，因此 hgPixels16 和 lgPixels16
+     * 都是正常行列顺序的 RAW16 低12位像素数组。</p>
+     *
+     * @param width 图像宽度
+     * @param height 图像高度
+     * @param hgPixels16 高增益平面，长度应为 width * height
+     * @param lgPixels16 低增益平面，长度应为 width * height
+     * @param fpgaPayload FPGA 图像通道直接收到的原始双平面 payload，顺序保持 HG + LG
+     */
+    void onHdrImageFrame(int width, int height, short[] hgPixels16, short[] lgPixels16, byte[] fpgaPayload);
 
     /**
      * 收到状态包后的回调。

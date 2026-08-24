@@ -6,6 +6,8 @@ import lombok.Data;
 @Data
 public class CalibrationPreviewResponse {
     private Integer frameIndex;
+    private String previewType;
+    private String label;
     private String imageDataUrl;
     private String storageUri;
 }

@@ -12,6 +12,7 @@ import springbootjni.dto.jni.CalibrationGlobalSettingsRequest;
 import springbootjni.dto.jni.CalibrationGlobalSettingsResponse;
 import springbootjni.dto.jni.CalibrationPreviewResponse;
 import springbootjni.dto.jni.CalibrationSessionResponse;
+import springbootjni.dto.jni.FpgaPayloadPixelDataResponse;
 import springbootjni.dto.jni.ImageFrameResponse;
 import springbootjni.dto.jni.ImagePixelDataResponse;
 import springbootjni.dto.jni.MultiFrameAnalysisRequest;
@@ -75,7 +76,8 @@ public class JNIController {
         try {
             Long userId = StpUtil.getLoginIdAsLong();
             boolean autoProcess = request != null && Boolean.TRUE.equals(request.getAutoProcess());
-            TriggerCaptureResponse response = jniService.sendTriggerOnce(userId, autoProcess);
+            String captureScene = request == null ? null : request.getCaptureScene();
+            TriggerCaptureResponse response = jniService.sendTriggerOnce(userId, autoProcess, captureScene);
             return ApiResponse.success("Trigger-once command sent successfully", response);
         } catch (Exception e) {
             return ApiResponse.error("Failed to send trigger-once command: " + e.getMessage());
@@ -96,6 +98,42 @@ public class JNIController {
     }
 
     /**
+     * 查询当前用户最近的 HDR 双增益采集记录。
+     */
+    @GetMapping("/hdr/images")
+    public ApiResponse<List<ImageFrameResponse>> listHdrImages() {
+        try {
+            return ApiResponse.success(jniService.listHdrImages(StpUtil.getLoginIdAsLong()));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to list HDR images: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 查询当前用户最近的 HDR 暗场双平面校准样本。
+     */
+    @GetMapping("/hdr-dark/images")
+    public ApiResponse<List<ImageFrameResponse>> listHdrDarkImages() {
+        try {
+            return ApiResponse.success(jniService.listHdrDarkImages(StpUtil.getLoginIdAsLong()));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to list HDR dark images: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 查询当前用户最近的 HDR 平场双平面校准样本。
+     */
+    @GetMapping("/hdr-flat/images")
+    public ApiResponse<List<ImageFrameResponse>> listHdrFlatImages() {
+        try {
+            return ApiResponse.success(jniService.listHdrFlatImages(StpUtil.getLoginIdAsLong()));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to list HDR flat images: " + e.getMessage());
+        }
+    }
+
+    /**
      * 对历史图片执行当前阶段可用的图像处理：坏点插值、少量异常行/列校正和处理后复检。
      */
     @PostMapping("/images/{imageId}/process")
@@ -109,7 +147,10 @@ public class JNIController {
     }
 
     /**
-     * 按需读取原始或处理后 RAW16 像素窗口。默认只返回一小块 ROI，避免前端一次加载整幅像素矩阵。
+     * 按需读取重排后 RAW16 像素窗口。
+     *
+     * <p>这里的 ORIGINAL 表示“未做校准/处理的原图版本”，但它已经不是 FPGA 直接输出的
+     * lane 交织 payload，而是 native 按芯片读出顺序转成正常行列坐标后的 RAW16。</p>
      */
     @GetMapping("/images/{imageId}/pixels")
     public ApiResponse<ImagePixelDataResponse> getImagePixels(@PathVariable long imageId,
@@ -134,6 +175,30 @@ public class JNIController {
             return ApiResponse.success("Image pixels loaded successfully", pixels);
         } catch (Exception e) {
             return ApiResponse.error("Failed to load image pixels: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 按需读取 FPGA 直接输出的原始有效像素 payload。
+     *
+     * <p>这里返回的是 fpga_payload.bin 的线性顺序，并给出每个 payload 像素重排后对应的
+     * 正常图像坐标，用于闭环验证 GLUX1605BSI HDR 4-lane 转序是否正确。</p>
+     */
+    @GetMapping("/images/{imageId}/fpga-payload")
+    public ApiResponse<FpgaPayloadPixelDataResponse> getFpgaPayloadPixels(@PathVariable long imageId,
+                                                                          @RequestParam(required = false) Integer start,
+                                                                          @RequestParam(required = false) Integer count,
+                                                                          @RequestParam(defaultValue = "false") boolean fullFrame) {
+        try {
+            FpgaPayloadPixelDataResponse pixels = jniService.getFpgaPayloadPixels(
+                    StpUtil.getLoginIdAsLong(),
+                    imageId,
+                    start,
+                    count,
+                    fullFrame);
+            return ApiResponse.success("FPGA payload pixels loaded successfully", pixels);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to load FPGA payload pixels: " + e.getMessage());
         }
     }
 
@@ -286,10 +351,21 @@ public class JNIController {
         }
     }
 
+    @DeleteMapping("/calibrations/{sessionId}")
+    public ApiResponse<Boolean> deleteCalibration(@PathVariable long sessionId) {
+        try {
+            return ApiResponse.success(
+                    "Calibration session deleted",
+                    jniService.deleteCalibration(StpUtil.getLoginIdAsLong(), sessionId));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to delete calibration session: " + e.getMessage());
+        }
+    }
+
     @GetMapping("/calibrations/{sessionId}/previews")
     public ApiResponse<List<CalibrationPreviewResponse>> listCalibrationPreviews(
             @PathVariable long sessionId,
-            @RequestParam(defaultValue = "6") int limit) {
+            @RequestParam(defaultValue = "0") int limit) {
         try {
             return ApiResponse.success(
                     "Calibration previews fetched",
@@ -297,6 +373,28 @@ public class JNIController {
                             StpUtil.getLoginIdAsLong(), sessionId, limit));
         } catch (Exception e) {
             return ApiResponse.error("Failed to fetch calibration previews: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/calibrations/{sessionId}/reference-preview")
+    public ApiResponse<CalibrationPreviewResponse> getCalibrationReferencePreview(@PathVariable long sessionId) {
+        try {
+            return ApiResponse.success(
+                    "Calibration reference preview fetched",
+                    jniService.getCalibrationReferencePreview(StpUtil.getLoginIdAsLong(), sessionId));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch calibration reference preview: " + e.getMessage());
+        }
+    }
+
+    @GetMapping("/calibrations/{sessionId}/reference-previews")
+    public ApiResponse<List<CalibrationPreviewResponse>> listCalibrationReferencePreviews(@PathVariable long sessionId) {
+        try {
+            return ApiResponse.success(
+                    "Calibration reference previews fetched",
+                    jniService.listCalibrationReferencePreviews(StpUtil.getLoginIdAsLong(), sessionId));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch calibration reference previews: " + e.getMessage());
         }
     }
 
