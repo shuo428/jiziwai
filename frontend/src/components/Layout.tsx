@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom';
-import { Layout as AntLayout, Menu, ConfigProvider, Button, Dropdown } from 'antd';
+import { Layout as AntLayout, Menu, ConfigProvider, Button, Dropdown, Segmented, Tag } from 'antd';
 import type { MenuProps } from 'antd';
-import { Home, Cpu, Radio, LogOut, User, MessageSquare, ChevronLeft, ChevronRight, Database, Settings2 } from 'lucide-react';
+import { Home, Cpu, Radio, LogOut, User, MessageSquare, ChevronLeft, ChevronRight, Database, Settings2, Layers } from 'lucide-react';
 import { useUserStore } from '../store/userStore';
+import { useJNIStore, type WorkMode } from '../store/jniStore';
 import { toast } from 'sonner';
 
 const { Sider, Content, Header } = AntLayout;
@@ -12,7 +13,24 @@ const LayoutContent: React.FC = () => {
     const location = useLocation();
     const navigate = useNavigate();
     const { userInfo, actions } = useUserStore();
+    const { workMode, actions: jniActions } = useJNIStore();
     const [collapsed, setCollapsed] = useState(false);
+
+    const routeMode = useMemo<WorkMode | null>(() => {
+        if (['/hdr-capture', '/hdr-management', '/hdr-calibration', '/hdr-dark-capture'].includes(location.pathname)) {
+            return 'HDR';
+        }
+        if (['/spectral-data', '/spectral-management', '/calibration'].includes(location.pathname)) {
+            return 'NORMAL';
+        }
+        return null;
+    }, [location.pathname]);
+
+    useEffect(() => {
+        if (routeMode && routeMode !== workMode) {
+            jniActions.setWorkMode(routeMode);
+        }
+    }, [jniActions, routeMode, workMode]);
 
     const handleLogout = () => {
         actions.setIsLoggingOut(true);
@@ -24,26 +42,57 @@ const LayoutContent: React.FC = () => {
         }, 100);
     };
 
-    const menuItems: MenuProps['items'] = [
+    const normalMenuItems: MenuProps['items'] = [
         {
             key: '/dashboard',
             icon: <Home size={18} />,
-            label: <Link to="/dashboard">仪表盘</Link>,
-        },
-        {
-            key: '/calibration',
-            icon: <Settings2 size={18} />,
-            label: <Link to="/calibration">校准与缺陷地图</Link>,
+            label: <Link to="/dashboard">设备总览</Link>,
         },
         {
             key: '/spectral-data',
             icon: <Radio size={18} />,
-            label: <Link to="/spectral-data">获取光谱数据</Link>,
+            label: <Link to="/spectral-data">普通图像采集</Link>,
+        },
+        {
+            key: '/calibration',
+            icon: <Settings2 size={18} />,
+            label: <Link to="/calibration">普通校准与缺陷地图</Link>,
         },
         {
             key: '/spectral-management',
             icon: <Database size={18} />,
-            label: <Link to="/spectral-management">光谱数据管理</Link>,
+            label: <Link to="/spectral-management">普通图像管理</Link>,
+        },
+    ];
+
+    const hdrMenuItems: MenuProps['items'] = [
+        {
+            key: '/dashboard',
+            icon: <Home size={18} />,
+            label: <Link to="/dashboard">设备总览</Link>,
+        },
+        {
+            key: '/hdr-capture',
+            icon: <Layers size={18} />,
+            label: <Link to="/hdr-capture">HDR图像采集</Link>,
+        },
+        {
+            key: '/hdr-calibration',
+            icon: <Settings2 size={18} />,
+            label: <Link to="/hdr-calibration">HDR校准与缺陷地图</Link>,
+        },
+        {
+            key: '/hdr-management',
+            icon: <Database size={18} />,
+            label: <Link to="/hdr-management">HDR图像管理</Link>,
+        },
+    ];
+
+    const commonMenuItems: MenuProps['items'] = [
+        {
+            key: '/config-management',
+            icon: <Cpu size={18} />,
+            label: <Link to="/config-management">配置管理</Link>,
         },
         {
             key: '/chat',
@@ -51,6 +100,52 @@ const LayoutContent: React.FC = () => {
             label: <Link to="/chat">AI 助手</Link>,
         },
     ];
+
+    const menuItems: MenuProps['items'] = [
+        ...(workMode === 'HDR' ? hdrMenuItems : normalMenuItems),
+        ...commonMenuItems,
+    ];
+
+    const titleMap: Record<string, string> = {
+        '/dashboard': '设备总览',
+        '/spectral-data': '普通图像采集',
+        '/hdr-capture': 'HDR图像采集',
+        '/hdr-calibration': 'HDR校准与缺陷地图',
+        '/hdr-management': 'HDR图像管理',
+        '/hdr-dark-capture': 'HDR暗场采集',
+        '/config-management': '配置管理',
+        '/spectral-management': '普通图像管理',
+        '/calibration': '普通校准与缺陷地图',
+        '/profile': '个人信息',
+        '/chat': 'AI 助手',
+    };
+
+    const selectedMenuKey = useMemo(() => {
+        if (location.pathname === '/hdr-dark-capture') {
+            return '/hdr-calibration';
+        }
+        return location.pathname;
+    }, [location.pathname]);
+
+    const handleModeChange = (nextMode: WorkMode) => {
+        if (nextMode === workMode) {
+            return;
+        }
+        jniActions.setWorkMode(nextMode);
+        const counterpartMap: Record<string, string> = {
+            '/spectral-data': '/hdr-capture',
+            '/calibration': '/hdr-calibration',
+            '/spectral-management': '/hdr-management',
+            '/hdr-capture': '/spectral-data',
+            '/hdr-calibration': '/calibration',
+            '/hdr-management': '/spectral-management',
+            '/hdr-dark-capture': '/calibration',
+        };
+        const nextPath = counterpartMap[location.pathname] ?? location.pathname;
+        if (nextPath !== location.pathname) {
+            navigate(nextPath, { replace: true });
+        }
+    };
 
     const userMenuItems: MenuProps['items'] = [
         {
@@ -102,9 +197,29 @@ const LayoutContent: React.FC = () => {
                     </div>
 
                     <div className="flex-1 py-4">
+                        {!collapsed && (
+                            <div className="mx-4 mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                <div className="mb-2 flex items-center justify-between gap-2">
+                                    <span className="text-xs font-medium text-slate-500">工作模式</span>
+                                    <Tag color={workMode === 'HDR' ? 'purple' : 'blue'} className="m-0">
+                                        {workMode === 'HDR' ? 'HDR' : '普通'}
+                                    </Tag>
+                                </div>
+                                <Segmented
+                                    block
+                                    size="small"
+                                    value={workMode}
+                                    options={[
+                                        { label: '普通', value: 'NORMAL' },
+                                        { label: 'HDR', value: 'HDR' },
+                                    ]}
+                                    onChange={(value) => handleModeChange(value as WorkMode)}
+                                />
+                            </div>
+                        )}
                         <Menu
                             mode="inline"
-                            selectedKeys={[location.pathname]}
+                            selectedKeys={[selectedMenuKey]}
                             items={menuItems}
                             className="bg-transparent border-0"
                             inlineCollapsed={collapsed}
@@ -126,32 +241,35 @@ const LayoutContent: React.FC = () => {
                 <Header className="bg-white border-b border-gray-200 px-6 flex items-center justify-between h-16 shadow-sm">
                     <div>
                         <h1 className="text-lg font-semibold text-slate-800 m-0">
-                            {location.pathname === '/dashboard'
-                                ? '仪表盘'
-                                : location.pathname === '/spectral-data'
-                                  ? '获取光谱数据'
-                                  : location.pathname === '/spectral-management'
-                                    ? '光谱数据管理'
-                                    : location.pathname === '/calibration'
-                                      ? '校准与缺陷地图'
-                                    : location.pathname === '/profile'
-                                      ? '个人信息'
-                                      : 'AI 助手'}
+                            {titleMap[location.pathname] ?? 'AI 助手'}
                         </h1>
-                        <p className="text-xs text-slate-500 m-0">物理实验数据处理系统</p>
+                        <p className="text-xs text-slate-500 m-0">
+                            {workMode === 'HDR' ? 'HDR双增益工作流' : '普通单帧工作流'} · 物理实验数据处理系统
+                        </p>
                     </div>
 
-                    <Dropdown menu={{ items: userMenuItems }} placement="bottomRight" trigger={['click']}>
-                        <Button
-                            type="text"
-                            className="flex items-center gap-2 h-10 px-3 hover:bg-gray-100 rounded-lg transition-colors"
-                        >
-                            <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center">
-                                <User size={16} className="text-white" />
-                            </div>
-                            <span className="text-slate-700 font-medium text-sm">{userInfo?.username || '用户'}</span>
-                        </Button>
-                    </Dropdown>
+                    <div className="flex items-center gap-3">
+                        <Segmented
+                            size="small"
+                            value={workMode}
+                            options={[
+                                { label: '普通模式', value: 'NORMAL' },
+                                { label: 'HDR模式', value: 'HDR' },
+                            ]}
+                            onChange={(value) => handleModeChange(value as WorkMode)}
+                        />
+                        <Dropdown menu={{ items: userMenuItems }} placement="bottomRight" trigger={['click']}>
+                            <Button
+                                type="text"
+                                className="flex items-center gap-2 h-10 px-3 hover:bg-gray-100 rounded-lg transition-colors"
+                            >
+                                <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center">
+                                    <User size={16} className="text-white" />
+                                </div>
+                                <span className="text-slate-700 font-medium text-sm">{userInfo?.username || '用户'}</span>
+                            </Button>
+                        </Dropdown>
+                    </div>
                 </Header>
 
                 <Content className="m-6 bg-gray-50 rounded-lg">

@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS t_spectral_capture (
             'NORMAL',
             'DARK',
             'FLAT',
+            'HDR',
+            'HDR_DARK',
+            'HDR_FLAT',
             'HALF_SATURATION',
             'SATURATION',
             'NARROW_LINE',
@@ -113,8 +116,20 @@ CREATE TABLE IF NOT EXISTS t_spectral_image (
     pixel_format VARCHAR(32) NOT NULL DEFAULT 'RAW16_LOW12',
     payload_length BIGINT NOT NULL CHECK (payload_length > 0),
 
+    fpga_payload_storage_uri TEXT,
+    fpga_payload_sha256 CHAR(64),
+    readout_order VARCHAR(64),
+    hg_raw_storage_uri TEXT,
+    lg_raw_storage_uri TEXT,
+    hg_preview_storage_uri TEXT,
+    lg_preview_storage_uri TEXT,
+    hdr_fusion_mask_storage_uri TEXT,
+    hdr_gain_ratio DOUBLE PRECISION,
+    hdr_fusion_details JSONB NOT NULL DEFAULT '{}'::JSONB,
     raw_storage_uri TEXT NOT NULL,
     preview_storage_uri TEXT,
+    calibrated_raw_storage_uri TEXT,
+    calibrated_preview_storage_uri TEXT,
     processed_storage_uri TEXT,
     raw_sha256 CHAR(64),
 
@@ -123,7 +138,9 @@ CREATE TABLE IF NOT EXISTS t_spectral_image (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT chk_image_raw_sha256
-        CHECK (raw_sha256 IS NULL OR raw_sha256 ~ '^[0-9a-fA-F]{64}$')
+        CHECK (raw_sha256 IS NULL OR raw_sha256 ~ '^[0-9a-fA-F]{64}$'),
+    CONSTRAINT chk_image_fpga_payload_sha256
+        CHECK (fpga_payload_sha256 IS NULL OR fpga_payload_sha256 ~ '^[0-9a-fA-F]{64}$')
 );
 
 CREATE INDEX IF NOT EXISTS idx_image_received_at
@@ -138,9 +155,21 @@ BEFORE UPDATE ON t_spectral_image
 FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 COMMENT ON TABLE t_spectral_image IS '图像格式、原始文件、预览图和处理结果地址';
-COMMENT ON COLUMN t_spectral_image.raw_storage_uri IS '原始12-bit数据文件地址';
+COMMENT ON COLUMN t_spectral_image.fpga_payload_storage_uri IS 'FPGA直接输出的有效像素payload文件地址，保持芯片/FPGA读出顺序';
+COMMENT ON COLUMN t_spectral_image.fpga_payload_sha256 IS 'FPGA原始payload的SHA-256摘要，用于追溯和重排验证';
+COMMENT ON COLUMN t_spectral_image.readout_order IS 'FPGA payload的空间读出顺序，例如GLUX1605 HDR 4-lane有效像素交织';
+COMMENT ON COLUMN t_spectral_image.hg_raw_storage_uri IS 'HDR模式高增益HG平面重排后的RAW16文件地址';
+COMMENT ON COLUMN t_spectral_image.lg_raw_storage_uri IS 'HDR模式低增益LG平面重排后的RAW16文件地址';
+COMMENT ON COLUMN t_spectral_image.hg_preview_storage_uri IS 'HDR模式高增益HG平面预览图地址';
+COMMENT ON COLUMN t_spectral_image.lg_preview_storage_uri IS 'HDR模式低增益LG平面预览图地址';
+COMMENT ON COLUMN t_spectral_image.hdr_fusion_mask_storage_uri IS 'HDR融合像素来源掩码，0=HG,1=LG,2=混合,3=双饱和';
+COMMENT ON COLUMN t_spectral_image.hdr_gain_ratio IS 'HDR融合使用的高低增益比例，含义为HG_DN/LG_DN';
+COMMENT ON COLUMN t_spectral_image.hdr_fusion_details IS 'HDR融合规则、阈值、比例估计和像素来源统计';
+COMMENT ON COLUMN t_spectral_image.raw_storage_uri IS '转序为正常行列顺序后的RAW16低12位数据文件地址';
 COMMENT ON COLUMN t_spectral_image.preview_storage_uri IS '前端显示用8-bit预览图地址';
-COMMENT ON COLUMN t_spectral_image.processed_storage_uri IS '校正或处理后的图像地址';
+COMMENT ON COLUMN t_spectral_image.calibrated_raw_storage_uri IS '暗场扣除、平场校正和稳定缺陷地图修复后的RAW16文件地址';
+COMMENT ON COLUMN t_spectral_image.calibrated_preview_storage_uri IS '校准后图像的前端预览图地址';
+COMMENT ON COLUMN t_spectral_image.processed_storage_uri IS '质量处置策略额外修复后的预览图地址';
 
 -- ---------------------------------------------------------------------------
 -- Essential reception-integrity result
@@ -304,7 +333,7 @@ CREATE TABLE IF NOT EXISTS t_spectrum_extraction (
         REFERENCES t_user(id) ON DELETE SET NULL,
 
     source_mode VARCHAR(16) NOT NULL
-        CHECK (source_mode IN ('ORIGINAL', 'PROCESSED')),
+        CHECK (source_mode IN ('ORIGINAL', 'CALIBRATED', 'PROCESSED')),
     source_quality_status VARCHAR(16) NOT NULL,
     wavelength_axis VARCHAR(8) NOT NULL
         CHECK (wavelength_axis IN ('X', 'Y')),
@@ -345,8 +374,8 @@ CREATE TABLE IF NOT EXISTS t_calibration_session (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT REFERENCES t_user(id) ON DELETE SET NULL,
     session_number INTEGER NOT NULL,
-    calibration_type VARCHAR(8) NOT NULL
-        CHECK (calibration_type IN ('DARK', 'FLAT')),
+    calibration_type VARCHAR(16) NOT NULL
+        CHECK (calibration_type IN ('DARK', 'FLAT', 'HDR_DARK', 'HDR_FLAT')),
     acquisition_mode VARCHAR(16) NOT NULL
         CHECK (acquisition_mode IN ('SIMULATED', 'HARDWARE', 'IMAGES')),
     status VARCHAR(16) NOT NULL
@@ -383,6 +412,10 @@ CREATE TABLE IF NOT EXISTS t_calibration_global_setting (
     dark_calibration_id BIGINT REFERENCES t_calibration_session(id) ON DELETE SET NULL,
     flat_calibration_id BIGINT REFERENCES t_calibration_session(id) ON DELETE SET NULL,
     defect_map_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    hdr_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    hdr_dark_calibration_id BIGINT REFERENCES t_calibration_session(id) ON DELETE SET NULL,
+    hdr_flat_calibration_id BIGINT REFERENCES t_calibration_session(id) ON DELETE SET NULL,
+    hdr_defect_map_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -413,6 +446,8 @@ SELECT
     i.pixel_format,
     i.raw_storage_uri,
     i.preview_storage_uri,
+    i.calibrated_raw_storage_uri,
+    i.calibrated_preview_storage_uri,
     i.processed_storage_uri,
     ia.passed AS integrity_passed,
     ia.result_code AS integrity_result_code,

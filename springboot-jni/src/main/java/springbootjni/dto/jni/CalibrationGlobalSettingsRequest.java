@@ -14,4 +14,10 @@ public class CalibrationGlobalSettingsRequest {
     private Long darkCalibrationId;
     private Long flatCalibrationId;
     private Boolean defectMapEnabled;
+
+    /** HDR模式是否启用独立的HG/LG暗场、平场校准包。 */
+    private Boolean hdrEnabled;
+    private Long hdrDarkCalibrationId;
+    private Long hdrFlatCalibrationId;
+    private Boolean hdrDefectMapEnabled;
 }

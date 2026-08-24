@@ -1,23 +1,26 @@
 import { useEffect } from "react";
 import { Button, Card, Tag, Typography } from "antd";
 import { Link } from "react-router-dom";
-import { Activity, ArrowRight, Camera, Cpu, Database, MessageSquare, Plug } from "lucide-react";
+import { Activity, ArrowRight, Camera, Cpu, Database, Layers, MessageSquare, Plug, Radio, Settings2 } from "lucide-react";
 
 import { useJNIStore } from "../store/jniStore";
 import { jniBridgeService } from "../service/jniBridgeService";
+import BridgeConnectionControl from "../components/BridgeConnectionControl";
 
 const { Title, Text } = Typography;
 
 const HomePage = () => {
-    const { bridgeState, imageHistory, latestStatus, latestConfigAck } = useJNIStore();
-    const recentFrames = imageHistory.slice(0, 5);
+    const { bridgeState, imageHistory, hdrImageHistory, latestStatus, latestConfigAck, workMode } = useJNIStore();
+    const activeHistory = workMode === "HDR" ? hdrImageHistory : imageHistory;
+    const recentFrames = activeHistory.slice(0, 5);
 
     // 首页可能是登录后的首个页面，因此直接从数据库加载最近图片。
     useEffect(() => {
-        jniBridgeService.loadImageHistory().catch(() => {
+        const loader = workMode === "HDR" ? jniBridgeService.loadHdrImageHistory : jniBridgeService.loadImageHistory;
+        loader().catch(() => {
             // 网络和鉴权错误由统一Axios拦截器提示，这里避免重复弹窗。
         });
-    }, []);
+    }, [workMode]);
 
     const stats = [
         {
@@ -27,10 +30,10 @@ const HomePage = () => {
             color: bridgeState.connected ? "green" : "default",
         },
         {
-            label: "历史图像",
-            value: imageHistory.length,
+            label: workMode === "HDR" ? "HDR历史图像" : "普通历史图像",
+            value: activeHistory.length,
             icon: <Database size={16} />,
-            color: "blue",
+            color: workMode === "HDR" ? "purple" : "blue",
         },
         {
             label: "状态位",
@@ -46,18 +49,55 @@ const HomePage = () => {
         },
     ];
 
-    const quickActions = [
+    const normalQuickActions = [
         {
-            icon: <Camera size={20} className="text-blue-600" />,
-            title: "光谱桥接控制",
-            description: "连接设备、获取图像帧、查询状态并下发配置",
+            icon: <Radio size={20} className="text-blue-600" />,
+            title: "普通图像采集",
+            description: "触发采集、查看当前图像帧并执行质量诊断",
             link: "/spectral-data",
         },
         {
+            icon: <Settings2 size={20} className="text-cyan-600" />,
+            title: "普通校准与缺陷地图",
+            description: "管理普通暗场、平场、稳定缺陷地图和校准包",
+            link: "/calibration",
+        },
+        {
             icon: <Database size={20} className="text-green-600" />,
-            title: "图像历史管理",
-            description: "查看PostgreSQL和服务器中保存的历史图像帧",
+            title: "普通图像管理",
+            description: "查看PostgreSQL和服务器中保存的普通历史图像帧",
             link: "/spectral-management",
+        },
+    ];
+
+    const hdrQuickActions = [
+        {
+            icon: <Layers size={20} className="text-purple-600" />,
+            title: "HDR图像采集",
+            description: "一次触发接收HG/LG双平面并生成HDR融合主图",
+            link: "/hdr-capture",
+        },
+        {
+            icon: <Settings2 size={20} className="text-purple-600" />,
+            title: "HDR校准与缺陷地图",
+            description: "管理HDR暗场、HDR平场以及HG/LG稳定缺陷修复",
+            link: "/hdr-calibration",
+        },
+        {
+            icon: <Database size={20} className="text-purple-600" />,
+            title: "HDR图像管理",
+            description: "查看HDR融合历史，追溯HG/LG输入平面和融合质量",
+            link: "/hdr-management",
+        },
+    ];
+
+    const quickActions = [
+        ...(workMode === "HDR" ? hdrQuickActions : normalQuickActions),
+        {
+            icon: <Cpu size={20} className="text-cyan-600" />,
+            title: "配置管理",
+            description: "采集规格、设备命令和FPGA完整配置下发",
+            link: "/config-management",
         },
         {
             icon: <MessageSquare size={20} className="text-indigo-600" />,
@@ -69,22 +109,7 @@ const HomePage = () => {
 
     return (
         <div className="space-y-6 p-6">
-            <Card className="bg-white border border-gray-200 shadow-sm">
-                <div className="flex items-center justify-between gap-4">
-                    <div>
-                        <Text className="text-slate-500 text-sm block mb-1">Spectra Bridge</Text>
-                        <Title level={3} className="!mb-2 !text-slate-800">
-                            光谱数据处理系统
-                        </Title>
-                        <Text className="text-slate-600 text-sm">
-                            通过新的 SpectraBridgeNative JNI 链路连接 FPGA 并接收回调数据
-                        </Text>
-                    </div>
-                    <div className="hidden h-16 w-16 items-center justify-center rounded-lg bg-blue-50 text-blue-600 sm:flex">
-                        <Camera size={32} />
-                    </div>
-                </div>
-            </Card>
+            <BridgeConnectionControl />
 
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                 {stats.map((stat) => (
@@ -104,9 +129,9 @@ const HomePage = () => {
 
             <div>
                 <Title level={5} className="!mb-3 !text-slate-800">
-                    快捷操作
+                    {workMode === "HDR" ? "HDR工作流快捷操作" : "普通工作流快捷操作"}
                 </Title>
-                <div className="grid gap-4 md:grid-cols-3">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
                     {quickActions.map((action) => (
                         <Link to={action.link} key={action.title}>
                             <Card hoverable className="h-full bg-white border border-gray-200 shadow-sm">
@@ -134,7 +159,7 @@ const HomePage = () => {
                         <Database size={18} />
                         最近图像帧
                     </Title>
-                    <Link to="/spectral-management">
+                    <Link to={workMode === "HDR" ? "/hdr-management" : "/spectral-management"}>
                         <Button type="link" className="flex items-center gap-1">
                             查看全部 <ArrowRight size={14} />
                         </Button>
@@ -145,12 +170,14 @@ const HomePage = () => {
                     <div className="py-8 text-center">
                         <Camera size={48} className="mx-auto mb-3 text-slate-300" />
                         <Text className="mb-2 block text-slate-500">暂无图像帧</Text>
-                        <Text className="text-sm text-slate-400">前往“光谱桥接控制”页面连接设备并获取一帧</Text>
+                        <Text className="text-sm text-slate-400">
+                            在“设备总览”连接设备后，前往“{workMode === "HDR" ? "HDR图像采集" : "普通图像采集"}”页面获取一帧
+                        </Text>
                     </div>
                 ) : (
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
                         {recentFrames.map((frame) => (
-                            <Link to="/spectral-management" key={frame.id}>
+                            <Link to={workMode === "HDR" ? "/hdr-management" : "/spectral-management"} key={frame.id}>
                                 <div className="rounded-md border border-slate-200 bg-slate-50 p-2 transition hover:border-blue-300">
                                     <div className="flex aspect-video items-center justify-center overflow-hidden rounded bg-slate-950">
                                         {frame.imageDataUrl ? (

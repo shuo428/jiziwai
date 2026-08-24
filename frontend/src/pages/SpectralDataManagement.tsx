@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from "react";
-import { Button, Card, Checkbox, Empty, InputNumber, Modal, Select, Space, Spin, Table, Tag, Typography } from "antd";
+import { Button, Card, Checkbox, Empty, InputNumber, Modal, Select, Segmented, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { Activity, Clock, Database, Eye, Image as ImageIcon, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { jniBridgeService } from "../service/jniBridgeService";
+import FpgaPayloadDataViewer from "../components/FpgaPayloadDataViewer";
 import ImagePixelDataViewer from "../components/ImagePixelDataViewer";
+import ImageVersionPreview from "../components/ImageVersionPreview";
 import SpectrumCurve from "../components/SpectrumCurve";
 import { useJNIStore } from "../store/jniStore";
 import type {
@@ -65,6 +67,19 @@ type QualityMetricSource = {
 };
 
 type QualityViewMode = "before" | "after";
+type HistoryScene = "NORMAL" | "HDR";
+
+type SpectralDataManagementPageProps = {
+    scene?: HistoryScene;
+};
+
+type HdrPlanePreviewItem = {
+    key: string;
+    label: string;
+    url: string;
+    tagColor: string;
+    description: string;
+};
 
 const numberFromRecord = (record: Record<string, unknown> | null | undefined, key: string): number | null => {
     const value = record?.[key];
@@ -134,6 +149,34 @@ const dispositionColor = (status?: string | null): string => {
     return "default";
 };
 
+const isRowMajorFrame = (frame?: ImageFrameRecord | null): boolean =>
+    String(frame?.readoutOrder ?? "").toUpperCase() === "ROW_MAJOR";
+
+const isHdrFrame = (frame?: ImageFrameRecord | null): boolean =>
+    String(frame?.captureScene ?? "").toUpperCase() === "HDR";
+
+const shouldShowFpgaPayloadMapping = (frame?: ImageFrameRecord | null): boolean =>
+    Boolean(frame?.fpgaPayloadStorageUri) && (isHdrFrame(frame) || !isRowMajorFrame(frame));
+
+const fpgaPayloadMappingTriggerLabel = (frame?: ImageFrameRecord | null): string =>
+    isHdrFrame(frame) ? "查看原始HDR payload映射" : "查看原始FPGA payload映射";
+
+const originalImageSourceLabel = (frame?: ImageFrameRecord | null): string =>
+    isRowMajorFrame(frame) ? "正常行列原图" : "重排后原图";
+
+const spectrumSourceLabel = (sourceMode?: string | null, frame?: ImageFrameRecord | null): string => {
+    if (sourceMode === "PROCESSED") {
+        return "处理后图像";
+    }
+    if (sourceMode === "CALIBRATED") {
+        return "校准后图像";
+    }
+    if (sourceMode === "ORIGINAL") {
+        return originalImageSourceLabel(frame);
+    }
+    return sourceMode || "未知来源";
+};
+
 const dispositionStatusLabel = (status?: string | null): string => {
     if (status === "USE_AS_IS") {
         return "直接使用";
@@ -153,6 +196,28 @@ const dispositionStatusLabel = (status?: string | null): string => {
     return status || "人工复核";
 };
 
+const buildHdrPlanePreviewItems = (frame: ImageFrameRecord | null): HdrPlanePreviewItem[] => {
+    if (!frame || frame.captureScene !== "HDR") {
+        return [];
+    }
+    return [
+        {
+            key: "hg",
+            label: "HG 高增益平面",
+            url: frame.hgImageDataUrl,
+            tagColor: "geekblue",
+            description: "一次HDR触发中的高增益输入平面，用于保留弱信号细节；它不直接替代融合主图进入普通质量处理流程。",
+        },
+        {
+            key: "lg",
+            label: "LG 低增益平面",
+            url: frame.lgImageDataUrl,
+            tagColor: "purple",
+            description: "一次HDR触发中的低增益输入平面，用于接管HG饱和区域；融合后主图继续进入质量分析、处理和光谱提取。",
+        },
+    ].filter((item) => Boolean(item.url));
+};
+
 const canExtractSpectrum = (frame: ImageFrameRecord | null, useProcessedSource: boolean): boolean =>
     useProcessedSource ? frame?.processedQualityStatus === "PASS" : frame?.qualityStatus === "PASS";
 
@@ -167,9 +232,10 @@ const getSpectrumExtractionDisabledReason = (
         return "当前查看的是处理后结果，但这张图像还没有处理后复检结果。";
     }
     if (!canExtractSpectrum(frame, useProcessedSource)) {
+        const beforeSourceLabel = frame.calibratedImageDataUrl ? "校准后图像" : originalImageSourceLabel(frame);
         return useProcessedSource
             ? "当前查看的是处理后结果，只有处理后复检质量为PASS时才能提取一维光谱。"
-            : "当前查看的是处理前原图，只有原图质量为PASS时才能提取一维光谱。";
+            : `当前查看的是${beforeSourceLabel}，只有质量为PASS时才能提取一维光谱。`;
     }
     return null;
 };
@@ -534,10 +600,13 @@ const buildProcessedQualitySource = (frame: ImageFrameRecord | null): QualityMet
     };
 };
 
-const SpectralDataManagementPage: React.FC = () => {
+const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({ scene }) => {
     const { imageHistory } = useJNIStore();
+    const [historyScene, setHistoryScene] = useState<HistoryScene>(scene ?? "NORMAL");
+    const [hdrHistory, setHdrHistory] = useState<ImageFrameRecord[]>([]);
     const [selectedFrame, setSelectedFrame] = useState<ImageFrameRecord | null>(null);
     const [previewVisible, setPreviewVisible] = useState(false);
+    const [hdrPlaneZoomItem, setHdrPlaneZoomItem] = useState<HdrPlanePreviewItem | null>(null);
     const [loading, setLoading] = useState(false);
     const [processingImageId, setProcessingImageId] = useState<number | null>(null);
     const [qualityViewMode, setQualityViewMode] = useState<QualityViewMode>("before");
@@ -550,6 +619,27 @@ const SpectralDataManagementPage: React.FC = () => {
     const [spectrumResult, setSpectrumResult] = useState<SpectrumExtractionRecord | null>(null);
     const [globalCalibrationSettings, setGlobalCalibrationSettings] =
         useState<CalibrationGlobalSettingsRecord | null>(null);
+    const displayedHistory = historyScene === "HDR" ? hdrHistory : imageHistory;
+    const lockedScene = Boolean(scene);
+    const pageTitle = historyScene === "HDR" ? "HDR图像管理" : "普通图像管理";
+    const pageDescription =
+        historyScene === "HDR"
+            ? "这里只管理HDR融合主图；HG/LG输入平面可在预览详情中追溯查看"
+            : "这里只管理普通单帧图像；HDR融合记录请切换到HDR工作模式查看";
+    const calibrationEnabled = historyScene === "HDR"
+        ? globalCalibrationSettings?.hdrEnabled
+        : globalCalibrationSettings?.enabled;
+    const defectMapEnabled = historyScene === "HDR"
+        ? globalCalibrationSettings?.hdrDefectMapEnabled
+        : globalCalibrationSettings?.defectMapEnabled;
+
+    useEffect(() => {
+        if (scene && scene !== historyScene) {
+            setHistoryScene(scene);
+            setSelectedFrame(null);
+            setPreviewVisible(false);
+        }
+    }, [historyScene, scene]);
 
     /**
      * 历史图片的唯一数据源是后端数据库和服务器文件系统。
@@ -558,7 +648,12 @@ const SpectralDataManagementPage: React.FC = () => {
     const loadHistory = async () => {
         setLoading(true);
         try {
-            await jniBridgeService.loadImageHistory();
+            if (historyScene === "HDR") {
+                const records = await jniBridgeService.loadHdrImageHistory();
+                setHdrHistory(records);
+            } else {
+                await jniBridgeService.loadImageHistory();
+            }
         } catch (error: any) {
             toast.error(error?.message || "加载数据库图片失败");
         } finally {
@@ -574,7 +669,7 @@ const SpectralDataManagementPage: React.FC = () => {
                 setGlobalCalibrationSettings(settings);
             })
             .catch(() => undefined);
-    }, []);
+    }, [historyScene]);
 
     useEffect(() => {
         setQualityViewMode(buildProcessedQualitySource(selectedFrame) ? "after" : "before");
@@ -613,10 +708,14 @@ const SpectralDataManagementPage: React.FC = () => {
             okButtonProps: { danger: true },
             onOk: async () => {
                 await jniBridgeService.deleteImage(record.id);
+                if (historyScene === "HDR" || record.captureScene === "HDR") {
+                    setHdrHistory((frames) => frames.filter((frame) => frame.id !== record.id));
+                }
                 if (selectedFrame?.id === record.id) {
                     setSelectedFrame(null);
                     setPreviewVisible(false);
                 }
+                await loadHistory();
                 toast.success("数据库图片已删除");
             },
         });
@@ -624,6 +723,7 @@ const SpectralDataManagementPage: React.FC = () => {
 
     const handlePreview = (record: ImageFrameRecord) => {
         setSelectedFrame(record);
+        setHdrPlaneZoomItem(null);
         setPreviewVisible(true);
     };
 
@@ -636,6 +736,11 @@ const SpectralDataManagementPage: React.FC = () => {
         setProcessingImageId(record.id);
         try {
             const processedFrame = await jniBridgeService.processImage(record.id);
+            if (historyScene === "HDR" || processedFrame.captureScene === "HDR") {
+                setHdrHistory((frames) =>
+                    frames.map((frame) => (frame.id === processedFrame.id ? processedFrame : frame)),
+                );
+            }
             if (selectedFrame?.id === record.id) {
                 setSelectedFrame(processedFrame);
             }
@@ -656,8 +761,13 @@ const SpectralDataManagementPage: React.FC = () => {
 
         setExtractingSpectrumImageId(record.id);
         try {
+            const sourceMode = useProcessedSource
+                ? "PROCESSED"
+                : record.calibratedImageDataUrl
+                  ? "CALIBRATED"
+                  : "ORIGINAL";
             const request: SpectrumExtractionRequest = {
-                sourceMode: useProcessedSource ? "PROCESSED" : "ORIGINAL",
+                sourceMode,
                 wavelengthAxis: spectrumAxis,
                 rectifyTilt: spectrumRectifyTilt,
                 integrationMethod: spectrumIntegrationMethod,
@@ -679,14 +789,16 @@ const SpectralDataManagementPage: React.FC = () => {
     const handleClearAll = () => {
         Modal.confirm({
             title: "确认清空",
-            content: "确定要清空当前用户的所有数据库图像和服务器文件吗？此操作不可恢复。",
+            content: "确定要清空当前用户的普通单帧和HDR融合图像历史及服务器文件吗？暗场/平场校准包不会在这里删除。此操作不可恢复。",
             okText: "确认清空",
             cancelText: "取消",
             okButtonProps: { danger: true },
             onOk: async () => {
                 await jniBridgeService.clearImages();
+                setHdrHistory([]);
                 setSelectedFrame(null);
                 setPreviewVisible(false);
+                await loadHistory();
                 toast.success("数据库历史已清空");
             },
         });
@@ -720,14 +832,22 @@ const SpectralDataManagementPage: React.FC = () => {
     );
     const selectedDarkCalibrationId = numberFromRecord(selectedFrameCalibration, "darkCalibrationId");
     const selectedFlatCalibrationId = numberFromRecord(selectedFrameCalibration, "flatCalibrationId");
+    const selectedDarkCalibrationDeleted = booleanFromRecord(selectedFrameCalibration, "darkCalibrationDeleted");
+    const selectedFlatCalibrationDeleted = booleanFromRecord(selectedFrameCalibration, "flatCalibrationDeleted");
+    const selectedDeletedCalibrationWarning = stringFromRecord(selectedFrameCalibration, "deletedCalibrationWarning");
     const selectedSummaryUsesProcessed = qualityViewMode === "after" && Boolean(selectedProcessedQualitySource);
     const selectedSummaryQualityStatus = selectedActiveQualitySource?.qualityStatus ?? null;
     const selectedSummaryDispositionStatus = selectedSummaryUsesProcessed
         ? selectedFrame?.processedDispositionStatus ?? null
         : selectedFrame?.dispositionStatus ?? null;
-    const selectedSummaryScopeLabel = selectedSummaryUsesProcessed ? "复检" : "原图";
-    const selectedSpectrumSourceMode = selectedSummaryUsesProcessed ? "PROCESSED" : "ORIGINAL";
-    const selectedSpectrumSourceLabel = selectedSummaryUsesProcessed ? "处理后图像" : "处理前原图";
+    const selectedBeforeScopeLabel = selectedFrame?.calibratedImageDataUrl ? "校准后" : "原图";
+    const selectedSummaryScopeLabel = selectedSummaryUsesProcessed ? "复检" : selectedBeforeScopeLabel;
+    const selectedSpectrumSourceMode = selectedSummaryUsesProcessed
+        ? "PROCESSED"
+        : selectedFrame?.calibratedImageDataUrl
+          ? "CALIBRATED"
+          : "ORIGINAL";
+    const selectedSpectrumSourceLabel = spectrumSourceLabel(selectedSpectrumSourceMode, selectedFrame);
     const selectedSpectrumDisabledReason = getSpectrumExtractionDisabledReason(
         selectedFrame,
         selectedSummaryUsesProcessed,
@@ -738,9 +858,9 @@ const SpectralDataManagementPage: React.FC = () => {
             : null;
     const selectedSpectrumMismatchMessage =
         !selectedSpectrumDisabledReason && spectrumResult && spectrumResult.sourceMode !== selectedSpectrumSourceMode
-            ? `当前已有光谱来自${spectrumResult.sourceMode === "PROCESSED" ? "处理后图像" : "处理前原图"}；当前查看的是${selectedSpectrumSourceLabel}，请切换质量视图或重新提取。`
+            ? `当前已有光谱来自${spectrumSourceLabel(spectrumResult.sourceMode, selectedFrame)}；当前查看的是${selectedSpectrumSourceLabel}，请切换质量视图或重新提取。`
             : null;
-    const selectedCounterpartScopeLabel = selectedSummaryUsesProcessed ? "原图" : "复检";
+    const selectedCounterpartScopeLabel = selectedSummaryUsesProcessed ? selectedBeforeScopeLabel : "复检";
     const selectedCounterpartQualityStatus = selectedSummaryUsesProcessed
         ? selectedFrame?.qualityStatus ?? null
         : selectedFrame?.processedQualityStatus ?? null;
@@ -752,6 +872,7 @@ const SpectralDataManagementPage: React.FC = () => {
         (metric) => metric.status === "WARNING" || metric.status === "FAIL",
     );
     const selectedQualityDecisionReasons = getQualityDecisionReasons(selectedActiveQualitySource);
+    const selectedHdrPlanePreviewItems = buildHdrPlanePreviewItems(selectedFrame);
 
     const columns: ColumnsType<ImageFrameRecord> = [
         {
@@ -759,7 +880,17 @@ const SpectralDataManagementPage: React.FC = () => {
             key: "imageDataUrl",
             width: 120,
             render: (_, record) => {
-                const previewUrl = record.processedImageDataUrl || record.imageDataUrl;
+                const previewUrl = record.processedImageDataUrl || record.calibratedImageDataUrl || record.imageDataUrl;
+                const previewLabel = record.processedImageDataUrl
+                    ? "处理后预览"
+                    : record.calibratedImageDataUrl
+                      ? "校准后预览"
+                      : "原图预览";
+                const previewColor = record.processedImageDataUrl
+                    ? "green"
+                    : record.calibratedImageDataUrl
+                      ? "cyan"
+                      : "default";
                 return (
                     <div className="space-y-1">
                         <div className="flex h-16 w-24 items-center justify-center overflow-hidden rounded bg-slate-950">
@@ -769,10 +900,21 @@ const SpectralDataManagementPage: React.FC = () => {
                                 <ImageIcon size={22} className="text-slate-400" />
                             )}
                         </div>
-                        {record.processedImageDataUrl && (
-                            <Tag color="green" className="m-0 text-[11px]">
-                                处理后预览
-                            </Tag>
+                        <Tag color={previewColor} className="m-0 text-[11px]">
+                            {previewLabel}
+                        </Tag>
+                        {record.captureScene === "HDR" && buildHdrPlanePreviewItems(record).length > 0 && (
+                            <div className="grid w-24 grid-cols-2 gap-1">
+                                {buildHdrPlanePreviewItems(record).map((item) => (
+                                    <div
+                                        key={item.key}
+                                        className="flex h-8 items-center justify-center overflow-hidden rounded bg-slate-950"
+                                        title={item.label}
+                                    >
+                                        <img src={item.url} alt={item.label} className="h-full w-full object-contain" />
+                                    </div>
+                                ))}
+                            </div>
                         )}
                     </div>
                 );
@@ -785,6 +927,7 @@ const SpectralDataManagementPage: React.FC = () => {
                 const displayQuality = getDisplayQualityStatus(record);
                 const displayDisposition = getDisplayDispositionStatus(record);
                 const frameCalibration = objectFromRecord(record.qualityDetails, "calibration");
+                const hdrDiagnosticStatus = stringFromRecord(record.hdrFusionDetails, "hdrDiagnosticStatus");
                 const calibrationEnabled = booleanFromRecord(frameCalibration, "calibrationPackageEnabled");
                 const defectMapEnabled = booleanFromRecord(frameCalibration, "defectMapEnabled");
                 const calibrationTagColor =
@@ -805,6 +948,22 @@ const SpectralDataManagementPage: React.FC = () => {
                         <div className="mt-1 text-xs text-slate-500">
                             {record.pixelFormat} · Payload {(record.payloadLength / 1024).toFixed(2)} KB
                         </div>
+                        <div className="mt-1 break-all text-xs text-slate-400">
+                            读出顺序 {record.readoutOrder || "未记录"}
+                        </div>
+                        <Tag color={record.captureScene === "HDR" ? "purple" : "blue"} className="mt-2">
+                            {record.captureScene === "HDR" ? "HDR融合图像" : "普通单帧"}
+                        </Tag>
+                        {record.captureScene === "HDR" && (
+                            <>
+                                <Tag color={qualityColor(hdrDiagnosticStatus)} className="mt-2">
+                                    HDR可靠性 {hdrDiagnosticStatus || "未分析"}
+                                </Tag>
+                                <Tag color="purple" className="mt-2">
+                                    增益比 {record.hdrGainRatio?.toFixed(3) ?? "-"}
+                                </Tag>
+                            </>
+                        )}
                         <Tag color={record.integrityPassed ? "green" : "red"} className="mt-2">
                             {record.integrityResultCode || "UNKNOWN"}
                         </Tag>
@@ -881,18 +1040,30 @@ const SpectralDataManagementPage: React.FC = () => {
                         </div>
                         <div>
                             <Title level={4} className="!mb-0 !text-slate-800">
-                                图像帧管理
+                                {pageTitle}
                             </Title>
-                            <Text className="text-sm text-slate-500">
-                                查看PostgreSQL记录和服务器保存的原始光谱图像
-                            </Text>
+                            <Text className="text-sm text-slate-500">{pageDescription}</Text>
                         </div>
                     </div>
 
-                    <div className="flex items-center gap-3">
-                        <Tag color={globalCalibrationSettings?.enabled ? "cyan" : "default"}>
-                            {globalCalibrationSettings?.enabled
-                                ? globalCalibrationSettings.defectMapEnabled
+                    <div className="flex flex-wrap items-center gap-3">
+                        {!lockedScene && (
+                            <Segmented
+                                value={historyScene}
+                                options={[
+                                    { label: "普通单帧", value: "NORMAL" },
+                                    { label: "HDR融合", value: "HDR" },
+                                ]}
+                                onChange={(value) => {
+                                    setHistoryScene(value as HistoryScene);
+                                    setSelectedFrame(null);
+                                    setPreviewVisible(false);
+                                }}
+                            />
+                        )}
+                        <Tag color={calibrationEnabled ? "cyan" : "default"}>
+                            {calibrationEnabled
+                                ? defectMapEnabled
                                     ? "校准包 + 稳定缺陷修复已启用"
                                     : "校准包已启用"
                                 : "校准包未启用"}
@@ -901,9 +1072,9 @@ const SpectralDataManagementPage: React.FC = () => {
                             刷新
                         </Button>
                         <Tag color="blue" className="px-3 py-1 text-sm">
-                            共 {imageHistory.length} 帧
+                            共 {displayedHistory.length} 帧
                         </Tag>
-                        {imageHistory.length > 0 && (
+                        {displayedHistory.length > 0 && (
                             <Button danger icon={<Trash2 size={16} />} onClick={handleClearAll}>
                                 清空全部
                             </Button>
@@ -911,17 +1082,21 @@ const SpectralDataManagementPage: React.FC = () => {
                     </div>
                 </div>
 
-                {loading && imageHistory.length === 0 ? (
+                {loading && displayedHistory.length === 0 ? (
                     <div className="flex justify-center py-16">
                         <Spin tip="正在加载数据库图片" />
                     </div>
-                ) : imageHistory.length === 0 ? (
+                ) : displayedHistory.length === 0 ? (
                     <Empty
                         image={Empty.PRESENTED_IMAGE_SIMPLE}
                         description={
                             <div className="text-slate-500">
-                                <div className="mb-2">数据库中暂无历史图像帧</div>
-                                <div className="text-sm">请先在“光谱桥接控制”页面获取一帧图片</div>
+                                <div className="mb-2">
+                                    数据库中暂无{historyScene === "HDR" ? "HDR融合" : "普通单帧"}历史图像帧
+                                </div>
+                                <div className="text-sm">
+                                    请先在“{historyScene === "HDR" ? "HDR图像采集" : "普通图像采集"}”页面获取一帧图片
+                                </div>
                             </div>
                         }
                         className="py-12"
@@ -929,7 +1104,7 @@ const SpectralDataManagementPage: React.FC = () => {
                 ) : (
                     <Table
                         columns={columns}
-                        dataSource={imageHistory}
+                        dataSource={displayedHistory}
                         rowKey="id"
                         loading={loading}
                         pagination={{
@@ -946,10 +1121,14 @@ const SpectralDataManagementPage: React.FC = () => {
                     <div className="flex items-center gap-2">
                         <ImageIcon size={18} />
                         <span>数据库图像预览</span>
+                        {selectedFrame?.captureScene === "HDR" && <Tag color="purple">HDR融合</Tag>}
                     </div>
                 }
                 open={previewVisible}
-                onCancel={() => setPreviewVisible(false)}
+                onCancel={() => {
+                    setPreviewVisible(false);
+                    setHdrPlaneZoomItem(null);
+                }}
                 footer={[
                     selectedFrame && (
                         <Button
@@ -965,7 +1144,13 @@ const SpectralDataManagementPage: React.FC = () => {
                             {getProcessingButtonLabel(selectedFrame, "处理当前图像")}
                         </Button>
                     ),
-                    <Button key="close" onClick={() => setPreviewVisible(false)}>
+                    <Button
+                        key="close"
+                        onClick={() => {
+                            setPreviewVisible(false);
+                            setHdrPlaneZoomItem(null);
+                        }}
+                    >
                         关闭
                     </Button>,
                 ]}
@@ -975,48 +1160,97 @@ const SpectralDataManagementPage: React.FC = () => {
                 {selectedFrame && (
                     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(520px,0.95fr)]">
                         <div className="space-y-3">
-                            <div className="h-[52vh] min-h-[360px] max-h-[560px] overflow-hidden rounded-md bg-slate-950">
-                                {selectedFrame.imageDataUrl ? (
-                                    <div
-                                        className={`grid h-full gap-px bg-slate-800 ${
-                                            selectedFrame.processedImageDataUrl ? "md:grid-cols-2" : "grid-cols-1"
-                                        }`}
-                                    >
-                                        <div className="flex h-full min-h-[360px] flex-col bg-slate-950">
-                                            <div className="flex flex-1 items-center justify-center p-2">
-                                                <img
-                                                    src={selectedFrame.imageDataUrl}
-                                                    alt="图像帧原图预览"
-                                                    className="h-full max-w-full object-contain"
-                                                />
+                            <ImageVersionPreview
+                                frame={selectedFrame}
+                                defaultVersion={
+                                    selectedSummaryUsesProcessed
+                                        ? "processed"
+                                        : selectedFrame.calibratedImageDataUrl
+                                          ? "calibrated"
+                                          : "raw"
+                                }
+                                emptyText="暂无图像帧"
+                                imageAreaClassName="h-[52vh] min-h-[420px] max-h-[640px]"
+                                rawLabel={selectedFrame.captureScene === "HDR" ? "融合主图" : "原图"}
+                                rawDescription={
+                                    selectedFrame.captureScene === "HDR"
+                                        ? "HG/LG融合后保存的主图，后续质量分析、图像处理和光谱提取均基于它继续执行。"
+                                        : "接收后保存的原始预览图，对应 raw16le.bin。"
+                                }
+                            />
+
+                            {selectedFrame.captureScene === "HDR" && (
+                                <Card
+                                    size="small"
+                                    title="HDR输入平面"
+                                    className="border border-slate-200 bg-white"
+                                >
+                                    {selectedHdrPlanePreviewItems.length > 0 ? (
+                                        <>
+                                            <div className="grid gap-3 md:grid-cols-2">
+                                                {selectedHdrPlanePreviewItems.map((item) => (
+                                                    <button
+                                                        key={item.key}
+                                                        type="button"
+                                                        className="overflow-hidden rounded-lg border border-slate-200 bg-slate-950 text-left shadow-sm transition hover:border-cyan-300 hover:shadow-md"
+                                                        onClick={() => setHdrPlaneZoomItem(item)}
+                                                    >
+                                                        <div className="flex aspect-[4/3] items-center justify-center p-2">
+                                                            <img
+                                                                src={item.url}
+                                                                alt={item.label}
+                                                                className="h-full w-full object-contain"
+                                                            />
+                                                        </div>
+                                                        <div className="border-t border-slate-800 bg-white px-2.5 py-2">
+                                                            <div className="mb-1 flex items-center justify-between gap-2">
+                                                                <Text className="font-medium text-slate-800">{item.label}</Text>
+                                                                <Tag color={item.tagColor} className="m-0 text-[11px]">
+                                                                    点击放大
+                                                                </Tag>
+                                                            </div>
+                                                            <Text className="text-xs leading-5 text-slate-500">
+                                                                {item.description}
+                                                            </Text>
+                                                        </div>
+                                                    </button>
+                                                ))}
                                             </div>
-                                            <div className="border-t border-slate-800 px-3 py-2 text-center text-xs font-medium text-slate-300">
-                                                原图
-                                            </div>
-                                        </div>
-                                        {selectedFrame.processedImageDataUrl && (
-                                            <div className="flex h-full min-h-[360px] flex-col bg-slate-950">
-                                                <div className="flex flex-1 items-center justify-center p-2">
-                                                    <img
-                                                        src={selectedFrame.processedImageDataUrl}
-                                                        alt="图像帧处理后预览"
-                                                        className="h-full max-w-full object-contain"
-                                                    />
-                                                </div>
-                                                <div className="border-t border-slate-800 px-3 py-2 text-center text-xs font-medium text-emerald-300">
-                                                    处理后
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                ) : (
-                                    <div className="flex h-full items-center justify-center">
-                                        <ImageIcon size={42} className="text-slate-500" />
-                                    </div>
-                                )}
-                            </div>
+                                            <Text className="mt-2 block text-xs leading-5 text-slate-500">
+                                                HG/LG 是该 HDR 记录的输入追溯数据；融合主图才继续复用普通单帧的质量、处理和光谱提取流程。
+                                            </Text>
+                                        </>
+                                    ) : (
+                                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该HDR记录没有返回HG/LG预览图" />
+                                    )}
+                                </Card>
+                            )}
 
                             <div className="grid gap-2 rounded-md bg-gray-50 p-3 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-2 2xl:grid-cols-5">
+                                <div className="min-w-0 rounded bg-white px-2 py-2">
+                                    <Text className="text-xs text-slate-500">采集类型</Text>
+                                    <div className="mt-1">
+                                        <Tag color={selectedFrame.captureScene === "HDR" ? "purple" : "blue"} className="m-0">
+                                            {selectedFrame.captureScene === "HDR" ? "HDR融合图像" : "普通单帧"}
+                                        </Tag>
+                                    </div>
+                                </div>
+                                {selectedFrame.captureScene === "HDR" && (
+                                    <div className="min-w-0 rounded bg-white px-2 py-2">
+                                        <Text className="text-xs text-slate-500">HDR融合</Text>
+                                        <div className="mt-1 flex flex-wrap gap-1">
+                                            <Tag
+                                                color={qualityColor(stringFromRecord(selectedFrame.hdrFusionDetails, "hdrDiagnosticStatus"))}
+                                                className="m-0"
+                                            >
+                                                可靠性 {stringFromRecord(selectedFrame.hdrFusionDetails, "hdrDiagnosticStatus") || "未分析"}
+                                            </Tag>
+                                            <Tag color="purple" className="m-0">
+                                                增益比 {selectedFrame.hdrGainRatio?.toFixed(3) ?? "-"}
+                                            </Tag>
+                                        </div>
+                                    </div>
+                                )}
                                 <div className="min-w-0 rounded bg-white px-2 py-2">
                                     <Text className="text-xs text-slate-500">尺寸</Text>
                                     <div className="font-semibold text-slate-800">
@@ -1031,6 +1265,12 @@ const SpectralDataManagementPage: React.FC = () => {
                                     <Text className="text-xs text-slate-500">Payload</Text>
                                     <div className="font-semibold text-slate-800">
                                         {(selectedFrame.payloadLength / 1024).toFixed(2)} KB
+                                    </div>
+                                </div>
+                                <div className="min-w-0 rounded bg-white px-2 py-2">
+                                    <Text className="text-xs text-slate-500">读出顺序</Text>
+                                    <div className="break-all font-semibold text-slate-800">
+                                        {selectedFrame.readoutOrder || "未记录"}
                                     </div>
                                 </div>
                                 <div className="min-w-0 rounded bg-white px-2 py-2">
@@ -1105,12 +1345,38 @@ const SpectralDataManagementPage: React.FC = () => {
                                     </div>
                                 </div>
                                 <div className="min-w-0 rounded bg-white px-2 py-2">
-                                    <Text className="mb-1 block text-xs text-slate-500">RAW16像素</Text>
-                                    <ImagePixelDataViewer
-                                        frame={selectedFrame}
-                                        defaultSource={selectedSummaryUsesProcessed ? "PROCESSED" : "ORIGINAL"}
-                                        triggerLabel="查看RAW16像素"
-                                    />
+                                    <Text className="mb-1 block text-xs text-slate-500">
+                                        {selectedFrame.captureScene === "HDR"
+                                            ? "融合主图RAW16像素"
+                                            : selectedFrame.readoutOrder === "ROW_MAJOR"
+                                              ? "正常行列RAW16像素"
+                                              : "重排后RAW16像素"}
+                                    </Text>
+                                    <Space wrap size={6}>
+                                        <ImagePixelDataViewer
+                                            frame={selectedFrame}
+                                            defaultSource={
+                                                selectedSummaryUsesProcessed
+                                                    ? "PROCESSED"
+                                                    : selectedFrame.calibratedImageDataUrl
+                                                      ? "CALIBRATED"
+                                                      : "ORIGINAL"
+                                            }
+                                            triggerLabel={
+                                                selectedFrame.captureScene === "HDR"
+                                                    ? "查看融合主图RAW16像素"
+                                                    : selectedFrame.readoutOrder === "ROW_MAJOR"
+                                                      ? "查看正常行列RAW16像素"
+                                                    : "查看重排后RAW16像素"
+                                            }
+                                        />
+                                        {shouldShowFpgaPayloadMapping(selectedFrame) && (
+                                            <FpgaPayloadDataViewer
+                                                frame={selectedFrame}
+                                                triggerLabel={fpgaPayloadMappingTriggerLabel(selectedFrame)}
+                                            />
+                                        )}
+                                    </Space>
                                 </div>
                                 <div className="min-w-0 rounded bg-white px-2 py-2">
                                     <Text className="text-xs text-slate-500">
@@ -1162,6 +1428,9 @@ const SpectralDataManagementPage: React.FC = () => {
                                         <Text className="text-sm font-medium text-cyan-800">本帧校准包与缺陷地图审计</Text>
                                         <div className="flex flex-wrap gap-2">
                                             <Tag color="cyan" className="m-0">采集时校准包已锁定</Tag>
+                                            {(selectedDarkCalibrationDeleted || selectedFlatCalibrationDeleted) && (
+                                                <Tag color="red" className="m-0">历史包已删除</Tag>
+                                            )}
                                             <Tag color={selectedCaptureCalibrationApplied ? "green" : "orange"} className="m-0">
                                                 {selectedCaptureCalibrationApplied ? "已应用匹配参考" : "未找到匹配参考"}
                                             </Tag>
@@ -1181,11 +1450,19 @@ const SpectralDataManagementPage: React.FC = () => {
                                         {stringFromRecord(selectedFrameCalibration, "message") ||
                                             "该图像保存了采集当时的校准包快照，后续全局设置变化不会影响此处追溯。"}
                                     </div>
+                                    {selectedDeletedCalibrationWarning && (
+                                        <div className="mt-2 text-xs leading-relaxed text-red-600">
+                                            {selectedDeletedCalibrationWarning}
+                                        </div>
+                                    )}
                                     <div className="mt-3 grid gap-2 sm:grid-cols-2">
                                         <div className="rounded-md border border-cyan-100 bg-white/80 p-2.5 text-xs">
                                             <div className="mb-1 text-slate-500">采集锁定暗场</div>
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Tag color="blue" className="m-0">{selectedDarkCalibrationLabel}</Tag>
+                                                {selectedDarkCalibrationDeleted && (
+                                                    <Tag color="red" className="m-0">已删除</Tag>
+                                                )}
                                                 {selectedDarkCalibrationId !== null && (
                                                     <span className="text-slate-500">数据库ID {selectedDarkCalibrationId}</span>
                                                 )}
@@ -1195,6 +1472,9 @@ const SpectralDataManagementPage: React.FC = () => {
                                             <div className="mb-1 text-slate-500">采集锁定平场</div>
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <Tag color="purple" className="m-0">{selectedFlatCalibrationLabel}</Tag>
+                                                {selectedFlatCalibrationDeleted && (
+                                                    <Tag color="red" className="m-0">已删除</Tag>
+                                                )}
                                                 {selectedFlatCalibrationId !== null && (
                                                     <span className="text-slate-500">数据库ID {selectedFlatCalibrationId}</span>
                                                 )}
@@ -1226,7 +1506,7 @@ const SpectralDataManagementPage: React.FC = () => {
                                     type={qualityViewMode === "before" ? "primary" : "default"}
                                     onClick={() => setQualityViewMode("before")}
                                 >
-                                    处理前
+                                    {selectedFrame.calibratedImageDataUrl ? "处理前（校准后）" : "处理前"}
                                 </Button>
                                 <Button
                                     type={qualityViewMode === "after" ? "primary" : "default"}
@@ -1561,6 +1841,31 @@ const SpectralDataManagementPage: React.FC = () => {
                         </div>
                     </div>
                 )}
+            </Modal>
+
+            <Modal
+                title={hdrPlaneZoomItem?.label ?? "HDR输入平面预览"}
+                open={Boolean(hdrPlaneZoomItem)}
+                onCancel={() => setHdrPlaneZoomItem(null)}
+                footer={<Button type="primary" onClick={() => setHdrPlaneZoomItem(null)}>关闭</Button>}
+                width="92vw"
+                style={{ maxWidth: 1400, top: 24 }}
+                destroyOnClose
+            >
+                <div className="space-y-3">
+                    <div className="h-[72vh] overflow-auto rounded-lg bg-slate-950 p-4 text-center">
+                        {hdrPlaneZoomItem && (
+                            <img
+                                src={hdrPlaneZoomItem.url}
+                                alt={hdrPlaneZoomItem.label}
+                                className="inline-block max-h-full max-w-full object-contain align-middle"
+                            />
+                        )}
+                    </div>
+                    {hdrPlaneZoomItem && (
+                        <Text className="block text-xs text-slate-500">{hdrPlaneZoomItem.description}</Text>
+                    )}
+                </div>
             </Modal>
         </div>
     );

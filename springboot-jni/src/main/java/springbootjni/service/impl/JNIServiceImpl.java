@@ -11,6 +11,7 @@ import springbootjni.dto.jni.CalibrationGlobalSettingsRequest;
 import springbootjni.dto.jni.CalibrationGlobalSettingsResponse;
 import springbootjni.dto.jni.CalibrationPreviewResponse;
 import springbootjni.dto.jni.CalibrationSessionResponse;
+import springbootjni.dto.jni.FpgaPayloadPixelDataResponse;
 import springbootjni.dto.jni.ImageFrameResponse;
 import springbootjni.dto.jni.ImagePixelDataResponse;
 import springbootjni.dto.jni.MultiFrameAnalysisRequest;
@@ -54,6 +55,13 @@ import java.util.concurrent.TimeUnit;
 @Service
 @RequiredArgsConstructor
 public class JNIServiceImpl implements JNIService {
+    private static final int DEFAULT_EXPECTED_WIDTH = 800;
+    private static final int DEFAULT_EXPECTED_HEIGHT = 600;
+    private static final String PIXEL_FORMAT_RAW16_LOW12 = "RAW16_LOW12";
+    private static final String READOUT_ORDER_GLUX1605_HDR_4LANE =
+            "GLUX1605_HDR_4LANE_INTERLEAVED_EFFECTIVE";
+    private static final String READOUT_ORDER_ROW_MAJOR = "ROW_MAJOR";
+
     private final WebSocketHandler webSocketHandler;
     private final ObjectMapper objectMapper;
     private final SpectralImagePersistenceService persistenceService;
@@ -82,8 +90,13 @@ public class JNIServiceImpl implements JNIService {
 
     private final BridgeListener bridgeListener = new BridgeListener() {
         @Override
-        public void onImageFrame(int width, int height, short[] pixels16, byte[] pixels8) {
-            JNIServiceImpl.this.handleImageFrame(width, height, pixels16, pixels8);
+        public void onImageFrame(int width, int height, short[] pixels16, byte[] pixels8, byte[] fpgaPayload) {
+            JNIServiceImpl.this.handleImageFrame(width, height, pixels16, pixels8, fpgaPayload);
+        }
+
+        @Override
+        public void onHdrImageFrame(int width, int height, short[] hgPixels16, short[] lgPixels16, byte[] fpgaPayload) {
+            JNIServiceImpl.this.handleHdrImageFrame(width, height, hgPixels16, lgPixels16, fpgaPayload);
         }
 
         @Override
@@ -108,6 +121,10 @@ public class JNIServiceImpl implements JNIService {
     private Integer controlPort;
     private Integer imagePort;
     private boolean verifyCrc = true;
+    private int expectedWidth = DEFAULT_EXPECTED_WIDTH;
+    private int expectedHeight = DEFAULT_EXPECTED_HEIGHT;
+    private String pixelFormat = PIXEL_FORMAT_RAW16_LOW12;
+    private String readoutOrder = READOUT_ORDER_GLUX1605_HDR_4LANE;
     private String lastError;
     private PendingCapture pendingCapture;
 
@@ -134,11 +151,23 @@ public class JNIServiceImpl implements JNIService {
             controlPort = request.getControlPort();
             imagePort = request.getImagePort();
             verifyCrc = request.getVerifyCrc() == null || request.getVerifyCrc();
+            expectedWidth = request.getExpectedWidth();
+            expectedHeight = request.getExpectedHeight();
+            pixelFormat = normalizePixelFormat(request.getPixelFormat());
+            readoutOrder = normalizeReadoutOrder(request.getReadoutOrder());
             lastError = null;
 
             try {
                 bridge = new SpectraBridgeNative(bridgeListener);
-                bridge.connect(host, controlPort, imagePort, verifyCrc);
+                bridge.connect(
+                        host,
+                        controlPort,
+                        imagePort,
+                        verifyCrc,
+                        expectedWidth,
+                        expectedHeight,
+                        pixelFormat,
+                        readoutOrder);
                 connected = true;
                 BridgeStateResponse state = toState("连接成功");
                 broadcastEvent("connection", state);
@@ -192,27 +221,58 @@ public class JNIServiceImpl implements JNIService {
      * 靠到达顺序猜测所属请求更可靠。</p>
      */
     @Override
-    public TriggerCaptureResponse sendTriggerOnce(Long userId, boolean autoProcess) {
+    public TriggerCaptureResponse sendTriggerOnce(Long userId, boolean autoProcess, String captureScene) {
         SpectraBridgeNative nativeBridge = requireConnectedNativeBridge();
         String requestId = UUID.randomUUID().toString();
+        String normalizedCaptureScene = normalizeCaptureScene(captureScene);
+        boolean calibrationScene = isCalibrationScene(normalizedCaptureScene);
+        boolean effectiveAutoProcess = calibrationScene ? false : autoProcess;
 
         Map<String, Object> configSnapshot = new LinkedHashMap<>();
         configSnapshot.put("host", host);
         configSnapshot.put("controlPort", controlPort);
         configSnapshot.put("imagePort", imagePort);
         configSnapshot.put("verifyCrc", verifyCrc);
-        configSnapshot.put("autoProcess", autoProcess);
-        configSnapshot.put("expectedWidth", 800);
-        configSnapshot.put("expectedHeight", 600);
-        configSnapshot.put("pixelFormat", "RAW16_LOW12");
+        configSnapshot.put("autoProcess", effectiveAutoProcess);
+        configSnapshot.put("captureScene", normalizedCaptureScene);
+        if (calibrationScene) {
+            configSnapshot.put("calibrationCapturePolicy", "skip active calibration package and image processing");
+        }
+        if (isHdrCaptureScene(normalizedCaptureScene)) {
+            configSnapshot.put("hdrPayloadLayout", "HG_FULL_FRAME_THEN_LG_FULL_FRAME");
+            if ("HDR_DARK".equals(normalizedCaptureScene)) {
+                configSnapshot.put("hdrCalibrationCapturePolicy",
+                        "capture HG/LG dark frames; keep plane data and diagnostic composite, do not use as spectral HDR fusion");
+            } else if ("HDR_FLAT".equals(normalizedCaptureScene)) {
+                configSnapshot.put("hdrCalibrationCapturePolicy",
+                        "capture HG/LG flat frames; keep plane data and diagnostic composite, do not use as spectral HDR fusion");
+            } else {
+                configSnapshot.put("hdrFusionPolicy",
+                        "median HG/LG gain ratio estimation with saturation-aware HG/LG blending");
+            }
+        }
+        configSnapshot.put("expectedWidth", expectedWidth);
+        configSnapshot.put("expectedHeight", expectedHeight);
+        configSnapshot.put("pixelFormat", pixelFormat);
+        configSnapshot.put("readoutOrder", readoutOrder);
 
         synchronized (captureLock) {
             if (pendingCapture != null) {
                 throw new IllegalStateException("已有一笔单帧采集正在等待回调");
             }
 
-            long captureId = persistenceService.createCapture(userId, requestId, configSnapshot);
-            PendingCapture capture = new PendingCapture(userId, captureId, requestId, verifyCrc, autoProcess);
+            long captureId = persistenceService.createCapture(userId, requestId, normalizedCaptureScene, configSnapshot);
+            PendingCapture capture = new PendingCapture(
+                    userId,
+                    captureId,
+                    requestId,
+                    verifyCrc,
+                    effectiveAutoProcess,
+                    normalizedCaptureScene,
+                    expectedWidth,
+                    expectedHeight,
+                    pixelFormat,
+                    readoutOrder);
             pendingCapture = capture;
 
             capture.timeoutFuture = captureTimeoutExecutor.schedule(
@@ -272,7 +332,7 @@ public class JNIServiceImpl implements JNIService {
      * 回调线程来自C++，因此先原子地取走pendingCapture，再执行较慢的文件和数据库写入。
      */
     @Override
-    public void handleImageFrame(int width, int height, short[] pixels16, byte[] pixels8) {
+    public void handleImageFrame(int width, int height, short[] pixels16, byte[] pixels8, byte[] fpgaPayload) {
         PendingCapture capture = takePendingCapture();
         if (capture == null) {
             // 没有等待事务时收到图片，说明它可能是超时后的迟到帧。
@@ -285,6 +345,20 @@ public class JNIServiceImpl implements JNIService {
         }
 
         try {
+            if (isHdrCaptureScene(capture.captureScene)) {
+                String message = "当前采集事务期望HDR双平面图像，但native返回的是普通单平面图像";
+                persistenceService.saveFailedCapture(
+                        capture.captureId,
+                        "FAILED",
+                        "CAPTURE_SCENE_MISMATCH",
+                        message,
+                        null,
+                        capture.elapsedMs(),
+                        capture.failureDetails());
+                broadcastCaptureFailure(capture, "CAPTURE_SCENE_MISMATCH", message);
+                return;
+            }
+
             ImageFrameResponse frame = persistenceService.saveSuccessfulFrame(
                     capture.captureId,
                     capture.userId,
@@ -293,8 +367,67 @@ public class JNIServiceImpl implements JNIService {
                     height,
                     pixels16,
                     pixels8,
+                    fpgaPayload,
+                    capture.pixelFormat,
+                    capture.readoutOrder,
                     capture.verifyCrc,
                     capture.autoProcess,
+                    capture.captureScene,
+                    capture.elapsedMs());
+            broadcastEvent("image_frame", frame);
+        } catch (RuntimeException ex) {
+            persistenceService.saveFailedCapture(
+                    capture.captureId,
+                    "FAILED",
+                    "PERSISTENCE_FAILED",
+                    ex.getMessage(),
+                    null,
+                    capture.elapsedMs(),
+                    capture.failureDetails());
+            broadcastCaptureFailure(capture, "PERSISTENCE_FAILED", ex.getMessage());
+        }
+    }
+
+    @Override
+    public void handleHdrImageFrame(int width, int height, short[] hgPixels16, short[] lgPixels16, byte[] fpgaPayload) {
+        PendingCapture capture = takePendingCapture();
+        if (capture == null) {
+            Map<String, Object> orphan = new LinkedHashMap<>();
+            orphan.put("channel", "image");
+            orphan.put("message", "收到无法归属到采集请求的迟到HDR图片，已丢弃");
+            broadcastEvent("transport_error", orphan);
+            return;
+        }
+
+        try {
+            if (!isHdrCaptureScene(capture.captureScene)) {
+                String message = "当前采集事务期望普通/校准图像，但native返回的是HDR双增益图像";
+                persistenceService.saveFailedCapture(
+                        capture.captureId,
+                        "FAILED",
+                        "CAPTURE_SCENE_MISMATCH",
+                        message,
+                        null,
+                        capture.elapsedMs(),
+                        capture.failureDetails());
+                broadcastCaptureFailure(capture, "CAPTURE_SCENE_MISMATCH", message);
+                return;
+            }
+
+            ImageFrameResponse frame = persistenceService.saveSuccessfulHdrFrame(
+                    capture.captureId,
+                    capture.userId,
+                    capture.requestId,
+                    width,
+                    height,
+                    hgPixels16,
+                    lgPixels16,
+                    fpgaPayload,
+                    capture.pixelFormat,
+                    capture.readoutOrder,
+                    capture.verifyCrc,
+                    capture.autoProcess,
+                    capture.captureScene,
                     capture.elapsedMs());
             broadcastEvent("image_frame", frame);
         } catch (RuntimeException ex) {
@@ -386,6 +519,61 @@ public class JNIServiceImpl implements JNIService {
     }
 
     @Override
+    public List<ImageFrameResponse> listHdrImages(Long userId) {
+        return persistenceService.listHdrImages(userId);
+    }
+
+    @Override
+    public List<ImageFrameResponse> listHdrDarkImages(Long userId) {
+        return persistenceService.listHdrDarkImages(userId);
+    }
+
+    @Override
+    public List<ImageFrameResponse> listHdrFlatImages(Long userId) {
+        return persistenceService.listHdrFlatImages(userId);
+    }
+
+    private String normalizeCaptureScene(String captureScene) {
+        if (captureScene == null || captureScene.trim().isEmpty()) {
+            return "NORMAL";
+        }
+        String scene = captureScene.trim().toUpperCase(java.util.Locale.ROOT);
+        if ("CALIBRATION_DARK".equals(scene)) {
+            return "DARK";
+        }
+        if ("CALIBRATION_FLAT".equals(scene)) {
+            return "FLAT";
+        }
+        if ("CALIBRATION_HDR_DARK".equals(scene) || "HDR_CALIBRATION_DARK".equals(scene)) {
+            return "HDR_DARK";
+        }
+        if ("CALIBRATION_HDR_FLAT".equals(scene) || "HDR_CALIBRATION_FLAT".equals(scene)) {
+            return "HDR_FLAT";
+        }
+        if ("NORMAL".equals(scene)
+                || "DARK".equals(scene)
+                || "FLAT".equals(scene)
+                || "HDR".equals(scene)
+                || "HDR_DARK".equals(scene)
+                || "HDR_FLAT".equals(scene)) {
+            return scene;
+        }
+        throw new IllegalArgumentException("captureScene 只能是 NORMAL、DARK、FLAT、HDR、HDR_DARK 或 HDR_FLAT");
+    }
+
+    private boolean isCalibrationScene(String captureScene) {
+        return "DARK".equals(captureScene)
+                || "FLAT".equals(captureScene)
+                || "HDR_DARK".equals(captureScene)
+                || "HDR_FLAT".equals(captureScene);
+    }
+
+    private boolean isHdrCaptureScene(String captureScene) {
+        String scene = normalizeCaptureScene(captureScene);
+        return "HDR".equals(scene) || "HDR_DARK".equals(scene) || "HDR_FLAT".equals(scene);
+    }
+
+    @Override
     public ImageFrameResponse processImage(Long userId, long imageId) {
         ensureNoPendingCaptureForHistoryMutation();
         return persistenceService.processImage(userId, imageId);
@@ -411,6 +599,15 @@ public class JNIServiceImpl implements JNIService {
                 yStart,
                 width,
                 height);
+    }
+
+    @Override
+    public FpgaPayloadPixelDataResponse getFpgaPayloadPixels(Long userId,
+                                                             long imageId,
+                                                             Integer start,
+                                                             Integer count,
+                                                             boolean fullFrame) {
+        return persistenceService.getFpgaPayloadPixels(userId, imageId, start, count, fullFrame);
     }
 
     @Override
@@ -482,6 +679,22 @@ public class JNIServiceImpl implements JNIService {
                                                                       long sessionId,
                                                                       int limit) {
         return calibrationService.listPreviews(userId, sessionId, limit);
+    }
+
+    @Override
+    public CalibrationPreviewResponse getCalibrationReferencePreview(Long userId, long sessionId) {
+        return calibrationService.getReferencePreview(userId, sessionId);
+    }
+
+    @Override
+    public List<CalibrationPreviewResponse> listCalibrationReferencePreviews(Long userId, long sessionId) {
+        return calibrationService.listReferencePreviews(userId, sessionId);
+    }
+
+    @Override
+    public boolean deleteCalibration(Long userId, long sessionId) {
+        ensureNoPendingCaptureForHistoryMutation();
+        return calibrationService.delete(userId, sessionId);
     }
 
     @Override
@@ -582,6 +795,47 @@ public class JNIServiceImpl implements JNIService {
         if (request.getImagePort() == null || request.getImagePort() < 1 || request.getImagePort() > 65535) {
             throw new IllegalArgumentException("imagePort must be in range 1..65535");
         }
+        int requestedWidth = request.getExpectedWidth() == null
+                ? DEFAULT_EXPECTED_WIDTH
+                : request.getExpectedWidth();
+        int requestedHeight = request.getExpectedHeight() == null
+                ? DEFAULT_EXPECTED_HEIGHT
+                : request.getExpectedHeight();
+        if (requestedWidth < 1 || requestedHeight < 1) {
+            throw new IllegalArgumentException("expectedWidth and expectedHeight must be greater than zero");
+        }
+        String normalizedPixelFormat = normalizePixelFormat(request.getPixelFormat());
+        if (!PIXEL_FORMAT_RAW16_LOW12.equals(normalizedPixelFormat)) {
+            throw new IllegalArgumentException("当前仅支持 RAW16_LOW12 像素格式");
+        }
+        String normalizedReadoutOrder = normalizeReadoutOrder(request.getReadoutOrder());
+        if (READOUT_ORDER_GLUX1605_HDR_4LANE.equals(normalizedReadoutOrder)
+                && requestedWidth % 4 != 0) {
+            throw new IllegalArgumentException("GLUX1605 HDR 4-lane 读出要求 expectedWidth 能被 4 整除");
+        }
+        request.setExpectedWidth(requestedWidth);
+        request.setExpectedHeight(requestedHeight);
+        request.setPixelFormat(normalizedPixelFormat);
+        request.setReadoutOrder(normalizedReadoutOrder);
+    }
+
+    private String normalizePixelFormat(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return PIXEL_FORMAT_RAW16_LOW12;
+        }
+        return value.trim().toUpperCase();
+    }
+
+    private String normalizeReadoutOrder(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return READOUT_ORDER_GLUX1605_HDR_4LANE;
+        }
+        String normalized = value.trim().toUpperCase();
+        if (READOUT_ORDER_GLUX1605_HDR_4LANE.equals(normalized)
+                || READOUT_ORDER_ROW_MAJOR.equals(normalized)) {
+            return normalized;
+        }
+        throw new IllegalArgumentException("readoutOrder 只能是 GLUX1605_HDR_4LANE_INTERLEAVED_EFFECTIVE 或 ROW_MAJOR");
     }
 
     private void closeBridgeQuietly() {
@@ -604,6 +858,10 @@ public class JNIServiceImpl implements JNIService {
         state.setControlPort(controlPort);
         state.setImagePort(imagePort);
         state.setVerifyCrc(verifyCrc);
+        state.setExpectedWidth(expectedWidth);
+        state.setExpectedHeight(expectedHeight);
+        state.setPixelFormat(pixelFormat);
+        state.setReadoutOrder(readoutOrder);
         state.setLastError(lastError);
         state.setMessage(message);
         return state;
@@ -650,6 +908,11 @@ public class JNIServiceImpl implements JNIService {
         private final String requestId;
         private final boolean verifyCrc;
         private final boolean autoProcess;
+        private final String captureScene;
+        private final int expectedWidth;
+        private final int expectedHeight;
+        private final String pixelFormat;
+        private final String readoutOrder;
         private final long startedNanos = System.nanoTime();
         private ScheduledFuture<?> timeoutFuture;
 
@@ -657,12 +920,22 @@ public class JNIServiceImpl implements JNIService {
                                long captureId,
                                String requestId,
                                boolean verifyCrc,
-                               boolean autoProcess) {
+                               boolean autoProcess,
+                               String captureScene,
+                               int expectedWidth,
+                               int expectedHeight,
+                               String pixelFormat,
+                               String readoutOrder) {
             this.userId = userId;
             this.captureId = captureId;
             this.requestId = requestId;
             this.verifyCrc = verifyCrc;
             this.autoProcess = autoProcess;
+            this.captureScene = captureScene == null ? "NORMAL" : captureScene;
+            this.expectedWidth = expectedWidth;
+            this.expectedHeight = expectedHeight;
+            this.pixelFormat = pixelFormat;
+            this.readoutOrder = readoutOrder;
         }
 
         private long elapsedMs() {
@@ -679,6 +952,11 @@ public class JNIServiceImpl implements JNIService {
             Map<String, Object> details = new LinkedHashMap<>();
             details.put("requestId", requestId);
             details.put("autoProcess", autoProcess);
+            details.put("captureScene", captureScene);
+            details.put("expectedWidth", expectedWidth);
+            details.put("expectedHeight", expectedHeight);
+            details.put("pixelFormat", pixelFormat);
+            details.put("readoutOrder", readoutOrder);
             return details;
         }
     }

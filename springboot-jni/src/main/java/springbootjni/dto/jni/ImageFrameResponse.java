@@ -17,6 +17,7 @@ public class ImageFrameResponse {
     private Long id;
     private Long captureId;
     private String requestId;
+    private String captureScene;
     private OffsetDateTime timestamp;
     private Integer width;
     private Integer height;
@@ -24,7 +25,33 @@ public class ImageFrameResponse {
     private Long raw16Length;
     private Long payloadLength;
     private String pixelFormat;
+    /** FPGA 直接输出的有效像素 payload 文件地址，仍保持芯片/FPGA读出顺序。 */
+    private String fpgaPayloadStorageUri;
+    /** FPGA 原始 payload 的 SHA-256，用于确认转序前数据是否一致。 */
+    private String fpgaPayloadSha256;
+    /** 当前 payload 使用的空间读出顺序；raw16le.bin 已经按该顺序转成正常行列图。 */
+    private String readoutOrder;
+    /** HDR高增益平面的RAW16文件地址；captureScene=HDR/HDR_DARK/HDR_FLAT时有值。 */
+    private String hgRawStorageUri;
+    /** HDR低增益平面的RAW16文件地址；captureScene=HDR/HDR_DARK/HDR_FLAT时有值。 */
+    private String lgRawStorageUri;
+    /** HDR高增益平面的预览图文件地址。 */
+    private String hgPreviewStorageUri;
+    /** HDR低增益平面的预览图文件地址。 */
+    private String lgPreviewStorageUri;
+    /** HDR融合时每个像素采用HG/LG/混合/双饱和的掩码文件地址。 */
+    private String hdrFusionMaskStorageUri;
+    /** HDR高低增益比例，含义为HG_DN/LG_DN。 */
+    private Double hdrGainRatio;
+    /** HDR融合规则、阈值、像素来源统计等审计信息。 */
+    private Map<String, Object> hdrFusionDetails;
     private String imageDataUrl;
+    /** HDR高增益平面预览图data URL。 */
+    private String hgImageDataUrl;
+    /** HDR低增益平面预览图data URL。 */
+    private String lgImageDataUrl;
+    /** 暗场扣除、平场校正和稳定缺陷地图修复后的校准版预览图；未启用校准包时为空。 */
+    private String calibratedImageDataUrl;
     private Boolean integrityPassed;
     private String integrityResultCode;
     private String qualityStatus;

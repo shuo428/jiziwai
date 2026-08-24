@@ -67,12 +67,32 @@ public final class SpectraBridgeNative implements AutoCloseable {
      * <p>这里约定两个 TCP 使用同一个 host，但端口分别独立。
      * 如果你的部署需要控制通道和图像通道走不同 IP，可以把签名再拆开。
      */
-    public void connect(String host, int controlPort, int imagePort, boolean verifyCrc) {
+    public void connect(String host,
+                        int controlPort,
+                        int imagePort,
+                        boolean verifyCrc,
+                        int expectedWidth,
+                        int expectedHeight,
+                        String pixelFormat,
+                        String readoutOrder) {
         Objects.requireNonNull(host, "host must not be null");
+        Objects.requireNonNull(pixelFormat, "pixelFormat must not be null");
+        Objects.requireNonNull(readoutOrder, "readoutOrder must not be null");
         validatePort(controlPort, "controlPort");
         validatePort(imagePort, "imagePort");
+        validatePositiveDimension(expectedWidth, "expectedWidth");
+        validatePositiveDimension(expectedHeight, "expectedHeight");
 
-        nativeConnect(requireHandle(), host, controlPort, imagePort, verifyCrc);
+        nativeConnect(
+                requireHandle(),
+                host,
+                controlPort,
+                imagePort,
+                verifyCrc,
+                expectedWidth,
+                expectedHeight,
+                pixelFormat,
+                readoutOrder);
     }
 
     /**
@@ -179,6 +199,12 @@ public final class SpectraBridgeNative implements AutoCloseable {
         }
     }
 
+    private static void validatePositiveDimension(int value, String fieldName) {
+        if (value < 1) {
+            throw new IllegalArgumentException(fieldName + " must be greater than zero");
+        }
+    }
+
     private static void loadNativeLibrary() {
         try {
             System.loadLibrary(DEFAULT_LIBRARY_NAME);
@@ -221,7 +247,11 @@ public final class SpectraBridgeNative implements AutoCloseable {
             String host,
             int controlPort,
             int imagePort,
-            boolean verifyCrc);
+            boolean verifyCrc,
+            int expectedWidth,
+            int expectedHeight,
+            String pixelFormat,
+            String readoutOrder);
 
     /**
      * 主动断开两条 TCP 连接。

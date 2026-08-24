@@ -69,7 +69,7 @@ public class SpectralSpectrumExtractionService {
                         "image_id BIGINT NOT NULL REFERENCES t_spectral_image(id) ON DELETE CASCADE, " +
                         "capture_id BIGINT NOT NULL REFERENCES t_spectral_capture(id) ON DELETE CASCADE, " +
                         "user_id BIGINT REFERENCES t_user(id) ON DELETE SET NULL, " +
-                        "source_mode VARCHAR(16) NOT NULL CHECK (source_mode IN ('ORIGINAL','PROCESSED')), " +
+                        "source_mode VARCHAR(16) NOT NULL CHECK (source_mode IN ('ORIGINAL','CALIBRATED','PROCESSED')), " +
                         "source_quality_status VARCHAR(16) NOT NULL, " +
                         "wavelength_axis VARCHAR(8) NOT NULL CHECK (wavelength_axis IN ('X','Y')), " +
                         "roi JSONB NOT NULL, " +
@@ -91,6 +91,13 @@ public class SpectralSpectrumExtractionService {
                 "CREATE INDEX IF NOT EXISTS idx_spectrum_extraction_image " +
                         "ON t_spectrum_extraction(image_id, created_at DESC)");
         jdbcTemplate.execute(
+                "ALTER TABLE IF EXISTS t_spectrum_extraction " +
+                        "DROP CONSTRAINT IF EXISTS t_spectrum_extraction_source_mode_check");
+        jdbcTemplate.execute(
+                "ALTER TABLE IF EXISTS t_spectrum_extraction " +
+                        "ADD CONSTRAINT t_spectrum_extraction_source_mode_check " +
+                        "CHECK (source_mode IN ('ORIGINAL','CALIBRATED','PROCESSED'))");
+        jdbcTemplate.execute(
                 "DELETE FROM t_spectrum_extraction older USING t_spectrum_extraction newer " +
                         "WHERE older.image_id=newer.image_id " +
                         "AND (older.created_at < newer.created_at " +
@@ -110,10 +117,9 @@ public class SpectralSpectrumExtractionService {
         short[] rawPixels16 = readRaw16Le(resolveStorageUri(selectedSource.rawStorageUri), source.width * source.height);
         short[] pixels16 = rawPixels16;
         Map<String, Object> calibrationDetails;
-        if (selectedSource.preprocessingApplied) {
-            calibrationDetails = Collections.singletonMap("preprocessingApplied", true);
-        } else {
-            // 原始图提取必须恢复采集时写入质量详情的校准包快照，不能使用后来更新的全局包。
+        if (selectedSource.applyCapturedCalibration) {
+            // 兼容旧数据：如果采集时记录了校准包快照但当时还没有落盘 calibrated RAW，
+            // 则按该快照临时恢复校准版像素，不能使用后来更新的全局包。
             SpectralCalibrationService.CalibrationProfile calibrationProfile = calibrationService.loadCapturedProfile(
                     userId, source.width, source.height, source.qualityDetails);
             SpectralCalibrationService.CalibrationApplicationResult calibration = calibrationProfile.apply(rawPixels16);
@@ -131,6 +137,11 @@ public class SpectralSpectrumExtractionService {
                 }
             }
             calibrationDetails = details;
+        } else if (selectedSource.preprocessingApplied) {
+            calibrationDetails = new LinkedHashMap<>(selectedSource.preprocessingDetails);
+            calibrationDetails.put("preprocessingApplied", true);
+        } else {
+            calibrationDetails = Collections.singletonMap("preprocessingApplied", false);
         }
 
         String wavelengthAxis = normalizeAxis(request);
@@ -246,6 +257,7 @@ public class SpectralSpectrumExtractionService {
     private ImageSource loadImageSource(Long userId, long imageId) {
         List<ImageSource> rows = jdbcTemplate.query(
                 "SELECT i.id AS image_id, i.capture_id, i.width, i.height, i.raw_storage_uri, " +
+                        "i.calibrated_raw_storage_uri, " +
                 "qa.quality_status, qa.details::text AS quality_details_json, al.details::text AS processing_details_json " +
                         "FROM t_spectral_image i " +
                         "JOIN t_spectral_capture c ON c.id=i.capture_id " +
@@ -256,7 +268,7 @@ public class SpectralSpectrumExtractionService {
                         "      AND details->>'processingStatus'='PROCESSED' " +
                         "    ORDER BY created_at DESC LIMIT 1" +
                         ") al ON TRUE " +
-                        "WHERE i.id=? AND c.user_id=?",
+                        "WHERE i.id=? AND c.user_id=? AND c.capture_scene IN ('NORMAL','HDR')",
                 (resultSet, rowNum) -> mapImageSource(resultSet),
                 imageId,
                 userId);
@@ -273,6 +285,7 @@ public class SpectralSpectrumExtractionService {
         source.width = resultSet.getInt("width");
         source.height = resultSet.getInt("height");
         source.rawStorageUri = resultSet.getString("raw_storage_uri");
+        source.calibratedRawStorageUri = resultSet.getString("calibrated_raw_storage_uri");
         source.originalQualityStatus = resultSet.getString("quality_status");
         source.qualityDetails = parseJsonMap(resultSet.getString("quality_details_json"));
         String processingDetailsJson = resultSet.getString("processing_details_json");
@@ -286,6 +299,7 @@ public class SpectralSpectrumExtractionService {
         String processedQualityStatus = asString(processedQuality.get("qualityStatus"));
         String processedRawUri = asString(source.processingDetails.get("processedRawStorageUri"));
         Map<String, Object> processedQualityDetails = asMap(processedQuality.get("details"));
+        Map<String, Object> capturedCalibration = asMap(source.qualityDetails.get("calibration"));
         Map<String, Object> processedCalibration = asMap(source.processingDetails.get("calibration"));
         if (processedCalibration.isEmpty()) {
             processedCalibration = asMap(processedQualityDetails.get("calibration"));
@@ -295,28 +309,97 @@ public class SpectralSpectrumExtractionService {
 
         boolean originalPass = "PASS".equals(source.originalQualityStatus);
         boolean processedPass = "PASS".equals(processedQualityStatus) && !processedRawUri.isEmpty();
+        boolean calibratedRawAvailable = source.calibratedRawStorageUri != null
+                && !source.calibratedRawStorageUri.trim().isEmpty();
+        boolean hasCapturedCalibration = Boolean.TRUE.equals(capturedCalibration.get("calibrationApplied"))
+                || Boolean.TRUE.equals(capturedCalibration.get("defectMapApplied"));
+        boolean calibratedPass = originalPass && (calibratedRawAvailable || hasCapturedCalibration);
 
         if ("PROCESSED".equals(requestedMode)) {
             if (!processedPass) {
                 throw new IllegalStateException("当前图片没有可用于光谱提取的处理后PASS结果");
             }
-            return new SelectedSource("PROCESSED", processedQualityStatus, processedRawUri, processedPreprocessingApplied);
+            return new SelectedSource(
+                    "PROCESSED",
+                    processedQualityStatus,
+                    processedRawUri,
+                    processedPreprocessingApplied,
+                    false,
+                    processedCalibration);
+        }
+
+        if ("CALIBRATED".equals(requestedMode)) {
+            if (!calibratedPass) {
+                throw new IllegalStateException("当前图片没有可用于光谱提取的校准后PASS结果");
+            }
+            if (calibratedRawAvailable) {
+                return new SelectedSource(
+                        "CALIBRATED",
+                        source.originalQualityStatus,
+                        source.calibratedRawStorageUri,
+                        true,
+                        false,
+                        capturedCalibration);
+            }
+            return new SelectedSource(
+                    "CALIBRATED",
+                    source.originalQualityStatus,
+                    source.rawStorageUri,
+                    false,
+                    true,
+                    capturedCalibration);
         }
 
         if ("ORIGINAL".equals(requestedMode)) {
             if (!originalPass) {
                 throw new IllegalStateException("原图质量不是PASS，不能直接提取一维光谱");
             }
-            return new SelectedSource("ORIGINAL", source.originalQualityStatus, source.rawStorageUri, false);
+            return new SelectedSource(
+                    "ORIGINAL",
+                    source.originalQualityStatus,
+                    source.rawStorageUri,
+                    false,
+                    false,
+                    Collections.singletonMap("preprocessingApplied", false));
         }
 
         if (processedPass) {
-            return new SelectedSource("PROCESSED", processedQualityStatus, processedRawUri, processedPreprocessingApplied);
+            return new SelectedSource(
+                    "PROCESSED",
+                    processedQualityStatus,
+                    processedRawUri,
+                    processedPreprocessingApplied,
+                    false,
+                    processedCalibration);
+        }
+        if (calibratedPass) {
+            if (calibratedRawAvailable) {
+                return new SelectedSource(
+                        "CALIBRATED",
+                        source.originalQualityStatus,
+                        source.calibratedRawStorageUri,
+                        true,
+                        false,
+                        capturedCalibration);
+            }
+            return new SelectedSource(
+                    "CALIBRATED",
+                    source.originalQualityStatus,
+                    source.rawStorageUri,
+                    false,
+                    true,
+                    capturedCalibration);
         }
         if (originalPass) {
-            return new SelectedSource("ORIGINAL", source.originalQualityStatus, source.rawStorageUri, false);
+            return new SelectedSource(
+                    "ORIGINAL",
+                    source.originalQualityStatus,
+                    source.rawStorageUri,
+                    false,
+                    false,
+                    Collections.singletonMap("preprocessingApplied", false));
         }
-        throw new IllegalStateException("当前图片原图和处理后结果均不是PASS，不能提取一维光谱");
+        throw new IllegalStateException("当前图片原图、校准后图和处理后结果均不是PASS，不能提取一维光谱");
     }
 
     private String normalizeSourceMode(SpectrumExtractionRequest request) {
@@ -324,7 +407,10 @@ public class SpectralSpectrumExtractionService {
             return "AUTO";
         }
         String mode = request.getSourceMode().trim().toUpperCase(Locale.ROOT);
-        if ("AUTO".equals(mode) || "ORIGINAL".equals(mode) || "PROCESSED".equals(mode)) {
+        if ("AUTO".equals(mode)
+                || "ORIGINAL".equals(mode)
+                || "CALIBRATED".equals(mode)
+                || "PROCESSED".equals(mode)) {
             return mode;
         }
         return "AUTO";
@@ -786,6 +872,7 @@ public class SpectralSpectrumExtractionService {
         private int width;
         private int height;
         private String rawStorageUri;
+        private String calibratedRawStorageUri;
         private String originalQualityStatus;
         private Map<String, Object> qualityDetails = Collections.emptyMap();
         private Map<String, Object> processingDetails = Collections.emptyMap();
@@ -796,15 +883,23 @@ public class SpectralSpectrumExtractionService {
         private final String qualityStatus;
         private final String rawStorageUri;
         private final boolean preprocessingApplied;
+        private final boolean applyCapturedCalibration;
+        private final Map<String, Object> preprocessingDetails;
 
         private SelectedSource(String sourceMode,
                                String qualityStatus,
                                String rawStorageUri,
-                               boolean preprocessingApplied) {
+                               boolean preprocessingApplied,
+                               boolean applyCapturedCalibration,
+                               Map<String, Object> preprocessingDetails) {
             this.sourceMode = sourceMode;
             this.qualityStatus = qualityStatus;
             this.rawStorageUri = rawStorageUri;
             this.preprocessingApplied = preprocessingApplied;
+            this.applyCapturedCalibration = applyCapturedCalibration;
+            this.preprocessingDetails = preprocessingDetails == null
+                    ? Collections.emptyMap()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(preprocessingDetails));
         }
     }
 

@@ -25,6 +25,24 @@ public class CalibrationGlobalSettingsResponse {
     /** 当前校准包是否含有可用的多帧缺陷地图。 */
     private boolean defectMapAvailable;
 
+    /** HDR模式是否启用独立HG/LG暗场、平场校准包。 */
+    private boolean hdrEnabled;
+
+    /** 当前HDR校准包选中的HDR暗场会话。 */
+    private Long hdrDarkCalibrationId;
+
+    /** 当前HDR校准包选中的HDR平场会话。 */
+    private Long hdrFlatCalibrationId;
+
+    /** HDR模式是否在HG/LG分别校准后应用对应平面的稳定缺陷地图。 */
+    private boolean hdrDefectMapEnabled;
+
+    /** 所选HDR暗场、HDR平场会话是否能组合为同尺寸的有效HDR校准包。 */
+    private boolean hdrCalibrationPackageReady;
+
+    /** 当前HDR校准包是否含有可用的HG/LG多帧缺陷地图。 */
+    private boolean hdrDefectMapAvailable;
+
     private Integer width;
     private Integer height;
 
@@ -33,6 +51,12 @@ public class CalibrationGlobalSettingsResponse {
 
     /** 当前是否至少保存过一组 READY 平场会话，仅作配置页提示。 */
     private boolean flatReferenceAvailable;
+
+    /** 当前是否至少保存过一组 READY HDR暗场会话，仅作配置页提示。 */
+    private boolean hdrDarkReferenceAvailable;
+
+    /** 当前是否至少保存过一组 READY HDR平场会话，仅作配置页提示。 */
+    private boolean hdrFlatReferenceAvailable;
 
     /** 最近修改全局开关的时间。 */
     private OffsetDateTime updatedAt;
