@@ -8,6 +8,7 @@ import ProfilePage from "../pages/Profile";
 import ChatPage from "../pages/Chat";
 import CalibrationPage from "../pages/Calibration";
 import ConfigManagementPage from "../pages/ConfigManagement";
+import GeometryCorrectionPage from "../pages/GeometryCorrection";
 import HdrCapturePage from "../pages/HdrCapture";
 import HdrDarkCapturePage from "../pages/HdrDarkCapture";
 import ProtectedRoute from "../components/ProtectedRoute";
@@ -16,6 +17,7 @@ import Layout from "../components/Layout";
 export default function AppRouter() {
     return (
         <Routes>
+            <Route path="/index.html" element={<Navigate to="/" replace />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route
@@ -68,6 +70,14 @@ export default function AppRouter() {
                     }
                 />
                 <Route
+                    path="/geometry-correction"
+                    element={
+                        <ProtectedRoute>
+                            <GeometryCorrectionPage />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
                     path="/spectral-management"
                     element={
                         <ProtectedRoute>
@@ -116,6 +126,7 @@ export default function AppRouter() {
                     }
                 />
             </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
     );
 }

@@ -12,6 +12,10 @@ import type {
     FpgaPayloadPixelDataRecord,
     FpgaPayloadPixelDataRequest,
     FpgaPayloadPixelRecord,
+    GeometryCorrectionRecord,
+    GeometryCorrectionRequest,
+    GeometryProfileRecord,
+    GeometryProfileRequest,
     ImageFrameRecord,
     ImagePixelDataRecord,
     ImagePixelDataRequest,
@@ -238,6 +242,30 @@ const normalizeImageFrame = (timestamp: string, payload: any): ImageFrameRecord 
             typeof payload?.processedUsableForSpectral === "boolean" ? payload.processedUsableForSpectral : null,
         processedDispositionMessage:
             typeof payload?.processedDispositionMessage === "string" ? payload.processedDispositionMessage : null,
+        geometryCorrectionId:
+            typeof payload?.geometryCorrectionId === "number" ? payload.geometryCorrectionId : null,
+        geometryProfileId:
+            typeof payload?.geometryProfileId === "number" ? payload.geometryProfileId : null,
+        geometrySourceMode:
+            typeof payload?.geometrySourceMode === "string" ? payload.geometrySourceMode : null,
+        geometryDispersionAxis:
+            typeof payload?.geometryDispersionAxis === "string" ? payload.geometryDispersionAxis : null,
+        geometryWidth: typeof payload?.geometryWidth === "number" ? payload.geometryWidth : null,
+        geometryHeight: typeof payload?.geometryHeight === "number" ? payload.geometryHeight : null,
+        geometryRawStorageUri:
+            typeof payload?.geometryRawStorageUri === "string" ? payload.geometryRawStorageUri : null,
+        geometryPreviewStorageUri:
+            typeof payload?.geometryPreviewStorageUri === "string" ? payload.geometryPreviewStorageUri : null,
+        geometryImageDataUrl:
+            typeof payload?.geometryImageDataUrl === "string" ? payload.geometryImageDataUrl : "",
+        geometrySummaryMessage:
+            typeof payload?.geometrySummaryMessage === "string" ? payload.geometrySummaryMessage : null,
+        geometryDetails:
+            payload?.geometryDetails && typeof payload.geometryDetails === "object"
+                ? payload.geometryDetails
+                : null,
+        geometryCorrectedAt:
+            typeof payload?.geometryCorrectedAt === "string" ? payload.geometryCorrectedAt : null,
 });
 
 const normalizePixelRows = (value: unknown): number[][] => {
@@ -405,6 +433,15 @@ const normalizeSpectrumExtraction = (payload: any): SpectrumExtractionRecord => 
     captureId: Number(payload?.captureId ?? 0),
     sourceMode: typeof payload?.sourceMode === "string" ? payload.sourceMode : "ORIGINAL",
     sourceQualityStatus: typeof payload?.sourceQualityStatus === "string" ? payload.sourceQualityStatus : "PASS",
+    geometryCorrectionApplied: Boolean(payload?.geometryCorrectionApplied),
+    geometryCorrectionId:
+        typeof payload?.geometryCorrectionId === "number" ? payload.geometryCorrectionId : null,
+    geometryProfileId:
+        typeof payload?.geometryProfileId === "number" ? payload.geometryProfileId : null,
+    geometrySummaryMessage:
+        typeof payload?.geometrySummaryMessage === "string" && payload.geometrySummaryMessage
+            ? payload.geometrySummaryMessage
+            : null,
     wavelengthAxis: typeof payload?.wavelengthAxis === "string" ? payload.wavelengthAxis : "X",
     roi: normalizeRoi(payload?.roi),
     rectified: Boolean(payload?.rectified),
@@ -422,6 +459,60 @@ const normalizeSpectrumExtraction = (payload: any): SpectrumExtractionRecord => 
     summaryMessage: typeof payload?.summaryMessage === "string" ? payload.summaryMessage : "",
     details: payload?.details && typeof payload.details === "object" ? payload.details : null,
     createdAt: typeof payload?.createdAt === "string" ? payload.createdAt : new Date().toISOString(),
+});
+
+const normalizeGeometryProfile = (payload: any): GeometryProfileRecord => ({
+    id: Number(payload?.id ?? 0),
+    profileName: typeof payload?.profileName === "string" ? payload.profileName : "几何校正配置",
+    modeType: typeof payload?.modeType === "string" ? payload.modeType : "NORMAL",
+    imageWidth: typeof payload?.imageWidth === "number" ? payload.imageWidth : null,
+    imageHeight: typeof payload?.imageHeight === "number" ? payload.imageHeight : null,
+    sourceMode: typeof payload?.sourceMode === "string" ? payload.sourceMode : "AUTO",
+    dispersionAxis: typeof payload?.dispersionAxis === "string" ? payload.dispersionAxis : "AUTO",
+    rotateDegrees: Number(payload?.rotateDegrees ?? 0),
+    flipX: Boolean(payload?.flipX),
+    flipY: Boolean(payload?.flipY),
+    tiltCorrectionEnabled: payload?.tiltCorrectionEnabled !== false,
+    maxShiftPixels: typeof payload?.maxShiftPixels === "number" ? payload.maxShiftPixels : null,
+    roi: normalizeRoi(payload?.roi),
+    enabled: Boolean(payload?.enabled),
+    algorithmVersion: typeof payload?.algorithmVersion === "string" ? payload.algorithmVersion : "",
+    details: payload?.details && typeof payload.details === "object" ? payload.details : null,
+    createdAt: typeof payload?.createdAt === "string" ? payload.createdAt : null,
+    updatedAt: typeof payload?.updatedAt === "string" ? payload.updatedAt : null,
+});
+
+const normalizeGeometryCorrection = (payload: any): GeometryCorrectionRecord => ({
+    id: typeof payload?.id === "number" ? payload.id : null,
+    imageId: Number(payload?.imageId ?? 0),
+    captureId: Number(payload?.captureId ?? 0),
+    profileId: typeof payload?.profileId === "number" ? payload.profileId : null,
+    modeType: typeof payload?.modeType === "string" ? payload.modeType : "NORMAL",
+    sourceMode: typeof payload?.sourceMode === "string" ? payload.sourceMode : "ORIGINAL",
+    sourceQualityStatus: typeof payload?.sourceQualityStatus === "string" ? payload.sourceQualityStatus : "PASS",
+    dispersionAxis: typeof payload?.dispersionAxis === "string" ? payload.dispersionAxis : "X",
+    roi: normalizeRoi(payload?.roi),
+    orientationApplied: Boolean(payload?.orientationApplied),
+    rotateDegrees: Number(payload?.rotateDegrees ?? 0),
+    flipX: Boolean(payload?.flipX),
+    flipY: Boolean(payload?.flipY),
+    tiltCorrectionApplied: Boolean(payload?.tiltCorrectionApplied),
+    maxShiftPixels: Number(payload?.maxShiftPixels ?? 0),
+    shiftMin: Number(payload?.shiftMin ?? 0),
+    shiftMax: Number(payload?.shiftMax ?? 0),
+    shiftMeanAbs: Number(payload?.shiftMeanAbs ?? 0),
+    axisConfidence: Number(payload?.axisConfidence ?? 0),
+    width: Number(payload?.width ?? 0),
+    height: Number(payload?.height ?? 0),
+    outputRawStorageUri:
+        typeof payload?.outputRawStorageUri === "string" ? payload.outputRawStorageUri : null,
+    outputPreviewStorageUri:
+        typeof payload?.outputPreviewStorageUri === "string" ? payload.outputPreviewStorageUri : null,
+    imageDataUrl: typeof payload?.imageDataUrl === "string" ? payload.imageDataUrl : "",
+    algorithmVersion: typeof payload?.algorithmVersion === "string" ? payload.algorithmVersion : "",
+    summaryMessage: typeof payload?.summaryMessage === "string" ? payload.summaryMessage : "",
+    details: payload?.details && typeof payload.details === "object" ? payload.details : null,
+    createdAt: typeof payload?.createdAt === "string" ? payload.createdAt : null,
 });
 
 const handleImageFrame = (timestamp: string, payload: any): void => {
@@ -706,6 +797,44 @@ const getLatestSpectrum = async (imageId: number): Promise<SpectrumExtractionRec
     return spectrum ? normalizeSpectrumExtraction(spectrum) : null;
 };
 
+const listGeometryProfiles = async (modeType?: "NORMAL" | "HDR"): Promise<GeometryProfileRecord[]> => {
+    const profiles = await jniApi.listGeometryProfiles(modeType);
+    return profiles.map(normalizeGeometryProfile);
+};
+
+const getEnabledGeometryProfile = async (
+    modeType: "NORMAL" | "HDR",
+): Promise<GeometryProfileRecord | null> => {
+    const profile = await jniApi.getEnabledGeometryProfile(modeType);
+    return profile ? normalizeGeometryProfile(profile) : null;
+};
+
+const saveGeometryProfile = async (
+    payload: GeometryProfileRequest,
+): Promise<GeometryProfileRecord> => normalizeGeometryProfile(await jniApi.saveGeometryProfile(payload));
+
+const deleteGeometryProfile = async (profileId: number): Promise<boolean> =>
+    jniApi.deleteGeometryProfile(profileId);
+
+const analyzeGeometryCorrection = async (
+    imageId: number,
+    request: GeometryCorrectionRequest = {},
+): Promise<GeometryCorrectionRecord> =>
+    normalizeGeometryCorrection(await jniApi.analyzeGeometryCorrection(imageId, request));
+
+const correctGeometry = async (
+    imageId: number,
+    request: GeometryCorrectionRequest = {},
+): Promise<GeometryCorrectionRecord> =>
+    normalizeGeometryCorrection(await jniApi.correctGeometry(imageId, request));
+
+const getLatestGeometryCorrection = async (
+    imageId: number,
+): Promise<GeometryCorrectionRecord | null> => {
+    const correction = await jniApi.getLatestGeometryCorrection(imageId);
+    return correction ? normalizeGeometryCorrection(correction) : null;
+};
+
 const clearImages = async (): Promise<void> => {
     await jniApi.clearImages();
     useJNIStore.getState().actions.clearImageHistory();
@@ -924,6 +1053,13 @@ export const jniBridgeService = {
     getFpgaPayloadPixels,
     extractSpectrum,
     getLatestSpectrum,
+    listGeometryProfiles,
+    getEnabledGeometryProfile,
+    saveGeometryProfile,
+    deleteGeometryProfile,
+    analyzeGeometryCorrection,
+    correctGeometry,
+    getLatestGeometryCorrection,
     deleteImage,
     clearImages,
     analyzeMultiFrame,

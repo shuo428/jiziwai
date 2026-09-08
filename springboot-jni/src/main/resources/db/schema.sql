@@ -323,6 +323,79 @@ COMMENT ON TABLE t_image_action_log IS '接受、校正、重拍、丢弃、报�
 -- Pixel-domain spectrum extraction
 -- ---------------------------------------------------------------------------
 
+CREATE TABLE IF NOT EXISTS t_spectral_geometry_profile (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT
+        REFERENCES t_user(id) ON DELETE CASCADE,
+
+    profile_name VARCHAR(96) NOT NULL,
+    mode_type VARCHAR(16) NOT NULL
+        CHECK (mode_type IN ('NORMAL', 'HDR')),
+    image_width INTEGER,
+    image_height INTEGER,
+    source_mode VARCHAR(32) NOT NULL DEFAULT 'AUTO'
+        CHECK (source_mode IN ('AUTO', 'ORIGINAL', 'CALIBRATED', 'PROCESSED')),
+    dispersion_axis VARCHAR(8) NOT NULL DEFAULT 'AUTO'
+        CHECK (dispersion_axis IN ('AUTO', 'X', 'Y')),
+    roi JSONB NOT NULL DEFAULT '{}'::JSONB,
+    rotate_degrees INTEGER NOT NULL DEFAULT 0
+        CHECK (rotate_degrees IN (0, 90, 180, 270)),
+    flip_x BOOLEAN NOT NULL DEFAULT FALSE,
+    flip_y BOOLEAN NOT NULL DEFAULT FALSE,
+    tilt_correction_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    max_shift_pixels INTEGER,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    algorithm_version VARCHAR(64) NOT NULL,
+    details JSONB NOT NULL DEFAULT '{}'::JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_geometry_profile_user_mode
+    ON t_spectral_geometry_profile(user_id, mode_type, enabled, updated_at DESC);
+
+COMMENT ON TABLE t_spectral_geometry_profile IS '二维光谱图像几何校正配置，包括ROI、方向、旋转翻转和轻微倾斜矫正参数';
+COMMENT ON COLUMN t_spectral_geometry_profile.details IS '第三版高阶几何模型TODO、配置来源和算法补充说明';
+
+CREATE TABLE IF NOT EXISTS t_image_geometry_correction (
+    id BIGSERIAL PRIMARY KEY,
+    image_id BIGINT NOT NULL
+        REFERENCES t_spectral_image(id) ON DELETE CASCADE,
+    capture_id BIGINT NOT NULL
+        REFERENCES t_spectral_capture(id) ON DELETE CASCADE,
+    user_id BIGINT
+        REFERENCES t_user(id) ON DELETE CASCADE,
+    profile_id BIGINT
+        REFERENCES t_spectral_geometry_profile(id) ON DELETE SET NULL,
+
+    mode_type VARCHAR(16) NOT NULL
+        CHECK (mode_type IN ('NORMAL', 'HDR')),
+    source_mode VARCHAR(32) NOT NULL
+        CHECK (source_mode IN ('ORIGINAL', 'CALIBRATED', 'PROCESSED')),
+    source_quality_status VARCHAR(16) NOT NULL,
+    input_raw_storage_uri TEXT NOT NULL,
+    output_raw_storage_uri TEXT NOT NULL,
+    output_preview_storage_uri TEXT,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    dispersion_axis VARCHAR(8) NOT NULL
+        CHECK (dispersion_axis IN ('X', 'Y')),
+    roi JSONB NOT NULL,
+    transform_details JSONB NOT NULL DEFAULT '{}'::JSONB,
+    algorithm_version VARCHAR(64) NOT NULL,
+    summary_message TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_image_geometry_user_image
+    ON t_image_geometry_correction(user_id, image_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_image_geometry_image
+    ON t_image_geometry_correction(image_id);
+
+COMMENT ON TABLE t_image_geometry_correction IS '某张图像最新二维几何校正结果，保存校正后RAW16和预览图地址';
+COMMENT ON COLUMN t_image_geometry_correction.transform_details IS '方向判定、ROI、旋转翻转、互相关偏移统计和第三版优化TODO';
+
 CREATE TABLE IF NOT EXISTS t_spectrum_extraction (
     id BIGSERIAL PRIMARY KEY,
     image_id BIGINT NOT NULL
@@ -332,8 +405,8 @@ CREATE TABLE IF NOT EXISTS t_spectrum_extraction (
     user_id BIGINT
         REFERENCES t_user(id) ON DELETE SET NULL,
 
-    source_mode VARCHAR(16) NOT NULL
-        CHECK (source_mode IN ('ORIGINAL', 'CALIBRATED', 'PROCESSED')),
+    source_mode VARCHAR(32) NOT NULL
+        CHECK (source_mode IN ('ORIGINAL', 'CALIBRATED', 'PROCESSED', 'GEOMETRY_CORRECTED')),
     source_quality_status VARCHAR(16) NOT NULL,
     wavelength_axis VARCHAR(8) NOT NULL
         CHECK (wavelength_axis IN ('X', 'Y')),

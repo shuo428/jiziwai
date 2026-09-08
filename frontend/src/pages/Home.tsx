@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { Button, Card, Tag, Typography } from "antd";
 import { Link } from "react-router-dom";
-import { Activity, ArrowRight, Camera, Cpu, Database, Layers, MessageSquare, Plug, Radio, Settings2 } from "lucide-react";
+import { Activity, ArrowRight, Camera, Cpu, Database, Layers, MessageSquare, Plug, Radio, ScanLine, Settings2 } from "lucide-react";
 
 import { useJNIStore } from "../store/jniStore";
 import { jniBridgeService } from "../service/jniBridgeService";
@@ -63,6 +63,12 @@ const HomePage = () => {
             link: "/calibration",
         },
         {
+            icon: <ScanLine size={20} className="text-sky-600" />,
+            title: "光谱几何校正",
+            description: "设置ROI、方向、旋转翻转并保存校正后二维谱图",
+            link: "/geometry-correction",
+        },
+        {
             icon: <Database size={20} className="text-green-600" />,
             title: "普通图像管理",
             description: "查看PostgreSQL和服务器中保存的普通历史图像帧",
@@ -82,6 +88,12 @@ const HomePage = () => {
             title: "HDR校准与缺陷地图",
             description: "管理HDR暗场、HDR平场以及HG/LG稳定缺陷修复",
             link: "/hdr-calibration",
+        },
+        {
+            icon: <ScanLine size={20} className="text-fuchsia-600" />,
+            title: "光谱几何校正",
+            description: "对HDR融合图设置ROI、方向和轻微倾斜矫正",
+            link: "/geometry-correction",
         },
         {
             icon: <Database size={20} className="text-purple-600" />,

@@ -206,10 +206,33 @@ public final class SpectraBridgeNative implements AutoCloseable {
     }
 
     private static void loadNativeLibrary() {
+        String explicitLibraryPath = System.getProperty("spectral.native.library.path");
+        if (explicitLibraryPath != null && !explicitLibraryPath.trim().isEmpty()) {
+            File libraryFile = new File(explicitLibraryPath.trim()).getAbsoluteFile();
+            if (!libraryFile.isFile()) {
+                throw new IllegalStateException("Native library configured by spectral.native.library.path does not exist: "
+                        + libraryFile.getAbsolutePath());
+            }
+            try {
+                System.load(libraryFile.getAbsolutePath());
+                return;
+            } catch (UnsatisfiedLinkError ex) {
+                UnsatisfiedLinkError error = new UnsatisfiedLinkError(
+                        "Failed to load native library from spectral.native.library.path="
+                                + libraryFile.getAbsolutePath()
+                                + ". Check whether its dependent DLLs are in the same directory or on PATH. Original error: "
+                                + ex.getMessage());
+                error.initCause(ex);
+                throw error;
+            }
+        }
+
+        UnsatisfiedLinkError libraryPathError = null;
         try {
             System.loadLibrary(DEFAULT_LIBRARY_NAME);
             return;
-        } catch (UnsatisfiedLinkError ignored) {
+        } catch (UnsatisfiedLinkError ex) {
+            libraryPathError = ex;
             // Fallback to packaged resource loading below.
         }
 
@@ -226,6 +249,18 @@ public final class SpectraBridgeNative implements AutoCloseable {
             System.load(tempFile.getAbsolutePath());
         } catch (IOException ex) {
             throw new IllegalStateException("Failed to load native library: " + mappedLibraryName, ex);
+        } catch (UnsatisfiedLinkError ex) {
+            UnsatisfiedLinkError error = new UnsatisfiedLinkError(
+                    "Failed to load native library " + mappedLibraryName
+                            + " from java.library.path or packaged resource. java.library.path="
+                            + System.getProperty("java.library.path")
+                            + ". Check whether dependent DLLs such as libstdc++-6.dll and libgcc_s_seh-1.dll are available. Original error: "
+                            + ex.getMessage());
+            if (libraryPathError != null) {
+                error.addSuppressed(libraryPathError);
+            }
+            error.initCause(ex);
+            throw error;
         }
     }
 

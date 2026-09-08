@@ -9,6 +9,10 @@ import type {
     CalibrationSessionRecord,
     FpgaPayloadPixelDataRecord,
     FpgaPayloadPixelDataRequest,
+    GeometryCorrectionRecord,
+    GeometryCorrectionRequest,
+    GeometryProfileRecord,
+    GeometryProfileRequest,
     ImageFrameRecord,
     ImagePixelDataRecord,
     ImagePixelDataRequest,
@@ -53,6 +57,25 @@ export const jniApi = {
         apiClient.get<unknown, SpectrumExtractionRecord | null>(`/jni/images/${imageId}/spectrum`),
     extractSpectrum: (imageId: number, payload?: SpectrumExtractionRequest) =>
         apiClient.post<unknown, SpectrumExtractionRecord>(`/jni/images/${imageId}/spectrum/extract`, payload ?? {}),
+    listGeometryProfiles: (modeType?: "NORMAL" | "HDR") =>
+        apiClient.get<unknown, GeometryProfileRecord[]>(
+            "/jni/geometry/profiles",
+            modeType ? { params: { modeType } } : undefined,
+        ),
+    getEnabledGeometryProfile: (modeType: "NORMAL" | "HDR") =>
+        apiClient.get<unknown, GeometryProfileRecord | null>("/jni/geometry/profiles/enabled", {
+            params: { modeType },
+        }),
+    saveGeometryProfile: (payload: GeometryProfileRequest) =>
+        apiClient.post<unknown, GeometryProfileRecord>("/jni/geometry/profiles", payload),
+    deleteGeometryProfile: (profileId: number) =>
+        apiClient.delete<unknown, boolean>(`/jni/geometry/profiles/${profileId}`),
+    analyzeGeometryCorrection: (imageId: number, payload?: GeometryCorrectionRequest) =>
+        apiClient.post<unknown, GeometryCorrectionRecord>(`/jni/images/${imageId}/geometry/analyze`, payload ?? {}),
+    correctGeometry: (imageId: number, payload?: GeometryCorrectionRequest) =>
+        apiClient.post<unknown, GeometryCorrectionRecord>(`/jni/images/${imageId}/geometry/correct`, payload ?? {}),
+    getLatestGeometryCorrection: (imageId: number) =>
+        apiClient.get<unknown, GeometryCorrectionRecord | null>(`/jni/images/${imageId}/geometry`),
     deleteImage: (imageId: number) => apiClient.delete<unknown, boolean>(`/jni/images/${imageId}`),
     clearImages: () => apiClient.delete<unknown, number>("/jni/images"),
     analyzeMultiFrame: (payload: MultiFrameAnalysisRequest) =>

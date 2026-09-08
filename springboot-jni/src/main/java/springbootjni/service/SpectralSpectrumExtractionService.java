@@ -57,6 +57,7 @@ public class SpectralSpectrumExtractionService {
     private final ObjectMapper objectMapper;
     private final SpectralCalibrationService calibrationService;
     private final SpectralImageProcessingService imageProcessingService;
+    private final SpectralGeometryCorrectionService geometryCorrectionService;
 
     @Value("${spectral.storage.root:D:/GraduationProject/spectral-images}")
     private String storageRoot;
@@ -69,7 +70,7 @@ public class SpectralSpectrumExtractionService {
                         "image_id BIGINT NOT NULL REFERENCES t_spectral_image(id) ON DELETE CASCADE, " +
                         "capture_id BIGINT NOT NULL REFERENCES t_spectral_capture(id) ON DELETE CASCADE, " +
                         "user_id BIGINT REFERENCES t_user(id) ON DELETE SET NULL, " +
-                        "source_mode VARCHAR(16) NOT NULL CHECK (source_mode IN ('ORIGINAL','CALIBRATED','PROCESSED')), " +
+                        "source_mode VARCHAR(32) NOT NULL CHECK (source_mode IN ('ORIGINAL','CALIBRATED','PROCESSED','GEOMETRY_CORRECTED')), " +
                         "source_quality_status VARCHAR(16) NOT NULL, " +
                         "wavelength_axis VARCHAR(8) NOT NULL CHECK (wavelength_axis IN ('X','Y')), " +
                         "roi JSONB NOT NULL, " +
@@ -92,11 +93,14 @@ public class SpectralSpectrumExtractionService {
                         "ON t_spectrum_extraction(image_id, created_at DESC)");
         jdbcTemplate.execute(
                 "ALTER TABLE IF EXISTS t_spectrum_extraction " +
+                        "ALTER COLUMN source_mode TYPE VARCHAR(32)");
+        jdbcTemplate.execute(
+                "ALTER TABLE IF EXISTS t_spectrum_extraction " +
                         "DROP CONSTRAINT IF EXISTS t_spectrum_extraction_source_mode_check");
         jdbcTemplate.execute(
                 "ALTER TABLE IF EXISTS t_spectrum_extraction " +
                         "ADD CONSTRAINT t_spectrum_extraction_source_mode_check " +
-                        "CHECK (source_mode IN ('ORIGINAL','CALIBRATED','PROCESSED'))");
+                        "CHECK (source_mode IN ('ORIGINAL','CALIBRATED','PROCESSED','GEOMETRY_CORRECTED'))");
         jdbcTemplate.execute(
                 "DELETE FROM t_spectrum_extraction older USING t_spectrum_extraction newer " +
                         "WHERE older.image_id=newer.image_id " +
@@ -112,22 +116,22 @@ public class SpectralSpectrumExtractionService {
                                               long imageId,
                                               SpectrumExtractionRequest request) {
         ImageSource source = loadImageSource(userId, imageId);
-        SelectedSource selectedSource = selectSource(source, normalizeSourceMode(request));
-        Roi roi = normalizeRoi(request == null ? null : request.getRoi(), source.width, source.height);
-        short[] rawPixels16 = readRaw16Le(resolveStorageUri(selectedSource.rawStorageUri), source.width * source.height);
+        SelectedSource selectedSource = selectSource(userId, source, normalizeSourceMode(request), shouldUseGeometryCorrection(request));
+        Roi roi = normalizeRoi(request == null ? null : request.getRoi(), selectedSource.width, selectedSource.height);
+        short[] rawPixels16 = readRaw16Le(resolveStorageUri(selectedSource.rawStorageUri), selectedSource.width * selectedSource.height);
         short[] pixels16 = rawPixels16;
         Map<String, Object> calibrationDetails;
         if (selectedSource.applyCapturedCalibration) {
             // 兼容旧数据：如果采集时记录了校准包快照但当时还没有落盘 calibrated RAW，
             // 则按该快照临时恢复校准版像素，不能使用后来更新的全局包。
             SpectralCalibrationService.CalibrationProfile calibrationProfile = calibrationService.loadCapturedProfile(
-                    userId, source.width, source.height, source.qualityDetails);
+                    userId, selectedSource.width, selectedSource.height, source.qualityDetails);
             SpectralCalibrationService.CalibrationApplicationResult calibration = calibrationProfile.apply(rawPixels16);
             pixels16 = calibration.getPixels16();
             Map<String, Object> details = new LinkedHashMap<>(calibration.getDetails());
             if (calibrationProfile.getDefectMap() != null) {
                 SpectralImageProcessingService.ProcessingResult mapResult = imageProcessingService.processWithMultiFrameDefectMap(
-                        source.width, source.height, pixels16, calibrationProfile.getDefectMap());
+                        selectedSource.width, selectedSource.height, pixels16, calibrationProfile.getDefectMap());
                 if (mapResult != null) {
                     pixels16 = mapResult.getProcessedPixels16();
                     details.put("defectMapApplied", true);
@@ -146,25 +150,42 @@ public class SpectralSpectrumExtractionService {
 
         String wavelengthAxis = normalizeAxis(request);
         if ("AUTO".equals(wavelengthAxis)) {
-            wavelengthAxis = detectWavelengthAxis(pixels16, source.width, roi);
+            if (selectedSource.dispersionAxis != null && !selectedSource.dispersionAxis.trim().isEmpty()) {
+                wavelengthAxis = selectedSource.dispersionAxis;
+            } else {
+                wavelengthAxis = detectWavelengthAxis(pixels16, selectedSource.width, roi);
+            }
         }
         boolean rectifyTilt = request == null || request.getRectifyTilt() == null || request.getRectifyTilt();
         String integrationMethod = normalizeIntegrationMethod(request);
         int maxShiftPixels = normalizeMaxShift(request, roi, wavelengthAxis);
 
         ExtractionComputation computation = "X".equals(wavelengthAxis)
-                ? extractAlongX(pixels16, source.width, roi, rectifyTilt, maxShiftPixels, integrationMethod)
-                : extractAlongY(pixels16, source.width, roi, rectifyTilt, maxShiftPixels, integrationMethod);
+                ? extractAlongX(pixels16, selectedSource.width, roi, rectifyTilt, maxShiftPixels, integrationMethod)
+                : extractAlongY(pixels16, selectedSource.width, roi, rectifyTilt, maxShiftPixels, integrationMethod);
 
         Map<String, Object> roiMap = roi.toMap();
         Map<String, Object> shiftSummary = computation.shiftSummary();
         Map<String, Object> details = new LinkedHashMap<>();
         details.put("algorithmVersion", ALGORITHM_VERSION);
         details.put("sourceRawStorageUri", selectedSource.rawStorageUri);
+        details.put("sourceWidth", selectedSource.width);
+        details.put("sourceHeight", selectedSource.height);
         details.put("axisDetection", wavelengthAxis);
         details.put("roi", roiMap);
         details.put("rectification", shiftSummary);
         details.put("calibration", calibrationDetails);
+        if (selectedSource.geometryCorrectionApplied) {
+            Map<String, Object> geometry = new LinkedHashMap<>();
+            geometry.put("geometryCorrectionApplied", true);
+            geometry.put("geometryCorrectionId", selectedSource.geometryCorrectionId);
+            geometry.put("geometryProfileId", selectedSource.geometryProfileId);
+            geometry.put("geometrySummaryMessage", selectedSource.geometrySummaryMessage);
+            geometry.put("geometryDetails", selectedSource.geometryDetails);
+            details.put("geometry", geometry);
+        } else {
+            details.put("geometry", Collections.singletonMap("geometryCorrectionApplied", false));
+        }
         details.put("notes", "pixel-domain spectrum; wavelength calibration is not applied");
 
         String summaryMessage = buildSummaryMessage(selectedSource, wavelengthAxis, roi, computation);
@@ -294,7 +315,22 @@ public class SpectralSpectrumExtractionService {
     }
 
     @SuppressWarnings("unchecked")
-    private SelectedSource selectSource(ImageSource source, String requestedMode) {
+    private SelectedSource selectSource(Long userId,
+                                        ImageSource source,
+                                        String requestedMode,
+                                        boolean useGeometryCorrection) {
+        SpectralGeometryCorrectionService.CorrectedSource correctedSource =
+                useGeometryCorrection ? geometryCorrectionService.loadLatestCorrectedSource(userId, source.imageId) : null;
+        if ("GEOMETRY_CORRECTED".equals(requestedMode)) {
+            if (correctedSource == null) {
+                throw new IllegalStateException("当前图片没有已保存的二维几何校正结果");
+            }
+            return SelectedSource.fromGeometry(correctedSource);
+        }
+        if ("AUTO".equals(requestedMode) && correctedSource != null) {
+            return SelectedSource.fromGeometry(correctedSource);
+        }
+
         Map<String, Object> processedQuality = asMap(source.processingDetails.get("processedQuality"));
         String processedQualityStatus = asString(processedQuality.get("qualityStatus"));
         String processedRawUri = asString(source.processingDetails.get("processedRawStorageUri"));
@@ -323,9 +359,15 @@ public class SpectralSpectrumExtractionService {
                     "PROCESSED",
                     processedQualityStatus,
                     processedRawUri,
+                    source.width,
+                    source.height,
                     processedPreprocessingApplied,
                     false,
-                    processedCalibration);
+                    processedCalibration,
+                    null,
+                    null,
+                    null,
+                    null);
         }
 
         if ("CALIBRATED".equals(requestedMode)) {
@@ -337,17 +379,29 @@ public class SpectralSpectrumExtractionService {
                         "CALIBRATED",
                         source.originalQualityStatus,
                         source.calibratedRawStorageUri,
+                        source.width,
+                        source.height,
                         true,
                         false,
-                        capturedCalibration);
+                        capturedCalibration,
+                        null,
+                        null,
+                        null,
+                        null);
             }
             return new SelectedSource(
                     "CALIBRATED",
                     source.originalQualityStatus,
                     source.rawStorageUri,
+                    source.width,
+                    source.height,
                     false,
                     true,
-                    capturedCalibration);
+                    capturedCalibration,
+                    null,
+                    null,
+                    null,
+                    null);
         }
 
         if ("ORIGINAL".equals(requestedMode)) {
@@ -358,9 +412,15 @@ public class SpectralSpectrumExtractionService {
                     "ORIGINAL",
                     source.originalQualityStatus,
                     source.rawStorageUri,
+                    source.width,
+                    source.height,
                     false,
                     false,
-                    Collections.singletonMap("preprocessingApplied", false));
+                    Collections.singletonMap("preprocessingApplied", false),
+                    null,
+                    null,
+                    null,
+                    null);
         }
 
         if (processedPass) {
@@ -368,9 +428,15 @@ public class SpectralSpectrumExtractionService {
                     "PROCESSED",
                     processedQualityStatus,
                     processedRawUri,
+                    source.width,
+                    source.height,
                     processedPreprocessingApplied,
                     false,
-                    processedCalibration);
+                    processedCalibration,
+                    null,
+                    null,
+                    null,
+                    null);
         }
         if (calibratedPass) {
             if (calibratedRawAvailable) {
@@ -378,26 +444,44 @@ public class SpectralSpectrumExtractionService {
                         "CALIBRATED",
                         source.originalQualityStatus,
                         source.calibratedRawStorageUri,
+                        source.width,
+                        source.height,
                         true,
                         false,
-                        capturedCalibration);
+                        capturedCalibration,
+                        null,
+                        null,
+                        null,
+                        null);
             }
             return new SelectedSource(
                     "CALIBRATED",
                     source.originalQualityStatus,
                     source.rawStorageUri,
+                    source.width,
+                    source.height,
                     false,
                     true,
-                    capturedCalibration);
+                    capturedCalibration,
+                    null,
+                    null,
+                    null,
+                    null);
         }
         if (originalPass) {
             return new SelectedSource(
                     "ORIGINAL",
                     source.originalQualityStatus,
                     source.rawStorageUri,
+                    source.width,
+                    source.height,
                     false,
                     false,
-                    Collections.singletonMap("preprocessingApplied", false));
+                    Collections.singletonMap("preprocessingApplied", false),
+                    null,
+                    null,
+                    null,
+                    null);
         }
         throw new IllegalStateException("当前图片原图、校准后图和处理后结果均不是PASS，不能提取一维光谱");
     }
@@ -410,10 +494,17 @@ public class SpectralSpectrumExtractionService {
         if ("AUTO".equals(mode)
                 || "ORIGINAL".equals(mode)
                 || "CALIBRATED".equals(mode)
-                || "PROCESSED".equals(mode)) {
+                || "PROCESSED".equals(mode)
+                || "GEOMETRY_CORRECTED".equals(mode)) {
             return mode;
         }
         return "AUTO";
+    }
+
+    private boolean shouldUseGeometryCorrection(SpectrumExtractionRequest request) {
+        return request == null
+                || request.getUseGeometryCorrection() == null
+                || request.getUseGeometryCorrection();
     }
 
     private String normalizeAxis(SpectrumExtractionRequest request) {
@@ -724,6 +815,10 @@ public class SpectralSpectrumExtractionService {
         response.setCaptureId(source.captureId);
         response.setSourceMode(selectedSource.sourceMode);
         response.setSourceQualityStatus(selectedSource.qualityStatus);
+        response.setGeometryCorrectionApplied(selectedSource.geometryCorrectionApplied);
+        response.setGeometryCorrectionId(selectedSource.geometryCorrectionId);
+        response.setGeometryProfileId(selectedSource.geometryProfileId);
+        response.setGeometrySummaryMessage(selectedSource.geometrySummaryMessage);
         response.setWavelengthAxis(wavelengthAxis);
         response.setRoi(roi.toResponseRoi());
         response.setRectified(rectified);
@@ -751,6 +846,12 @@ public class SpectralSpectrumExtractionService {
         response.setCaptureId(resultSet.getLong("capture_id"));
         response.setSourceMode(resultSet.getString("source_mode"));
         response.setSourceQualityStatus(resultSet.getString("source_quality_status"));
+        Map<String, Object> details = parseJsonMap(resultSet.getString("details_json"));
+        Map<String, Object> geometryDetails = asMap(details.get("geometry"));
+        response.setGeometryCorrectionApplied(Boolean.TRUE.equals(geometryDetails.get("geometryCorrectionApplied")));
+        response.setGeometryCorrectionId(asLong(geometryDetails.get("geometryCorrectionId")));
+        response.setGeometryProfileId(asLong(geometryDetails.get("geometryProfileId")));
+        response.setGeometrySummaryMessage(asString(geometryDetails.get("geometrySummaryMessage")));
         response.setWavelengthAxis(resultSet.getString("wavelength_axis"));
         response.setRoi(roiFromMap(parseJsonMap(resultSet.getString("roi_json"))));
         response.setRectified(resultSet.getBoolean("rectified"));
@@ -767,7 +868,7 @@ public class SpectralSpectrumExtractionService {
         response.setPoints(parsePointList(resultSet.getString("spectrum_points_json")));
         response.setAlgorithmVersion(resultSet.getString("algorithm_version"));
         response.setSummaryMessage(resultSet.getString("summary_message"));
-        response.setDetails(parseJsonMap(resultSet.getString("details_json")));
+        response.setDetails(details);
         response.setCreatedAt(resultSet.getObject("created_at", OffsetDateTime.class));
         return response;
     }
@@ -854,6 +955,20 @@ public class SpectralSpectrumExtractionService {
         return fallback;
     }
 
+    private Long asLong(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        if (value != null) {
+            try {
+                return Long.parseLong(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
     private String toJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
@@ -882,24 +997,68 @@ public class SpectralSpectrumExtractionService {
         private final String sourceMode;
         private final String qualityStatus;
         private final String rawStorageUri;
+        private final int width;
+        private final int height;
         private final boolean preprocessingApplied;
         private final boolean applyCapturedCalibration;
         private final Map<String, Object> preprocessingDetails;
+        private final boolean geometryCorrectionApplied;
+        private final Long geometryCorrectionId;
+        private final Long geometryProfileId;
+        private final String geometrySummaryMessage;
+        private final String dispersionAxis;
+        private final Map<String, Object> geometryDetails;
 
         private SelectedSource(String sourceMode,
                                String qualityStatus,
                                String rawStorageUri,
+                               int width,
+                               int height,
                                boolean preprocessingApplied,
                                boolean applyCapturedCalibration,
-                               Map<String, Object> preprocessingDetails) {
+                               Map<String, Object> preprocessingDetails,
+                               Long geometryCorrectionId,
+                               Long geometryProfileId,
+                               String geometrySummaryMessage,
+                               Map<String, Object> geometryDetails) {
             this.sourceMode = sourceMode;
             this.qualityStatus = qualityStatus;
             this.rawStorageUri = rawStorageUri;
+            this.width = width;
+            this.height = height;
             this.preprocessingApplied = preprocessingApplied;
             this.applyCapturedCalibration = applyCapturedCalibration;
             this.preprocessingDetails = preprocessingDetails == null
                     ? Collections.emptyMap()
                     : Collections.unmodifiableMap(new LinkedHashMap<>(preprocessingDetails));
+            this.geometryCorrectionApplied = geometryCorrectionId != null;
+            this.geometryCorrectionId = geometryCorrectionId;
+            this.geometryProfileId = geometryProfileId;
+            this.geometrySummaryMessage = geometrySummaryMessage;
+            this.geometryDetails = geometryDetails == null
+                    ? Collections.emptyMap()
+                    : Collections.unmodifiableMap(new LinkedHashMap<>(geometryDetails));
+            this.dispersionAxis = geometryDetails == null ? null : asStringStatic(geometryDetails.get("selectedDispersionAxis"));
+        }
+
+        private static SelectedSource fromGeometry(SpectralGeometryCorrectionService.CorrectedSource correctedSource) {
+            return new SelectedSource(
+                    "GEOMETRY_CORRECTED",
+                    correctedSource.getSourceQualityStatus(),
+                    correctedSource.getRawStorageUri(),
+                    correctedSource.getWidth(),
+                    correctedSource.getHeight(),
+                    true,
+                    false,
+                    Collections.<String, Object>singletonMap("geometryCorrectionApplied", true),
+                    correctedSource.getCorrectionId(),
+                    correctedSource.getProfileId(),
+                    correctedSource.getSummaryMessage(),
+                    correctedSource.getDetails());
+        }
+
+        private static String asStringStatic(Object value) {
+            return value == null ? "" : String.valueOf(value);
         }
     }
 

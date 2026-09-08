@@ -96,4 +96,17 @@ public class ImageFrameResponse {
     private String processedDispositionStatus;
     private Boolean processedUsableForSpectral;
     private String processedDispositionMessage;
+    /** 最新一次二维光谱几何校正记录；为空表示该图像还没有生成 geometry-corrected 版本。 */
+    private Long geometryCorrectionId;
+    private Long geometryProfileId;
+    private String geometrySourceMode;
+    private String geometryDispersionAxis;
+    private Integer geometryWidth;
+    private Integer geometryHeight;
+    private String geometryRawStorageUri;
+    private String geometryPreviewStorageUri;
+    private String geometryImageDataUrl;
+    private String geometrySummaryMessage;
+    private Map<String, Object> geometryDetails;
+    private OffsetDateTime geometryCorrectedAt;
 }

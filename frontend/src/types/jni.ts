@@ -93,9 +93,21 @@ export interface ImageFrameRecord {
     processedDispositionStatus: string | null;
     processedUsableForSpectral: boolean | null;
     processedDispositionMessage: string | null;
+    geometryCorrectionId: number | null;
+    geometryProfileId: number | null;
+    geometrySourceMode: string | null;
+    geometryDispersionAxis: string | null;
+    geometryWidth: number | null;
+    geometryHeight: number | null;
+    geometryRawStorageUri: string | null;
+    geometryPreviewStorageUri: string | null;
+    geometryImageDataUrl: string;
+    geometrySummaryMessage: string | null;
+    geometryDetails: Record<string, unknown> | null;
+    geometryCorrectedAt: string | null;
 }
 
-export type ImagePixelSourceMode = "ORIGINAL" | "CALIBRATED" | "PROCESSED";
+export type ImagePixelSourceMode = "ORIGINAL" | "CALIBRATED" | "PROCESSED" | "GEOMETRY_CORRECTED";
 export type ImagePixelDisplayFormat = "DN" | "HEX_WORD" | "HEX_FILE";
 
 export interface ImagePixelDataRequest {
@@ -311,7 +323,8 @@ export interface SpectrumRoi {
 }
 
 export interface SpectrumExtractionRequest {
-    sourceMode?: "AUTO" | "ORIGINAL" | "CALIBRATED" | "PROCESSED";
+    sourceMode?: "AUTO" | "ORIGINAL" | "CALIBRATED" | "PROCESSED" | "GEOMETRY_CORRECTED";
+    useGeometryCorrection?: boolean;
     wavelengthAxis?: "AUTO" | "X" | "Y";
     rectifyTilt?: boolean;
     maxShiftPixels?: number;
@@ -330,6 +343,10 @@ export interface SpectrumExtractionRecord {
     captureId: number;
     sourceMode: string;
     sourceQualityStatus: string;
+    geometryCorrectionApplied: boolean;
+    geometryCorrectionId: number | null;
+    geometryProfileId: number | null;
+    geometrySummaryMessage: string | null;
     wavelengthAxis: string;
     roi: SpectrumRoi;
     rectified: boolean;
@@ -347,6 +364,90 @@ export interface SpectrumExtractionRecord {
     summaryMessage: string;
     details: Record<string, unknown> | null;
     createdAt: string;
+}
+
+export interface GeometryProfileRequest {
+    id?: number | null;
+    profileName?: string;
+    modeType?: "NORMAL" | "HDR";
+    sourceMode?: "AUTO" | "ORIGINAL" | "CALIBRATED" | "PROCESSED";
+    dispersionAxis?: "AUTO" | "X" | "Y";
+    rotateDegrees?: 0 | 90 | 180 | 270;
+    flipX?: boolean;
+    flipY?: boolean;
+    tiltCorrectionEnabled?: boolean;
+    maxShiftPixels?: number | null;
+    roi?: Partial<SpectrumRoi>;
+    enabled?: boolean;
+    details?: Record<string, unknown>;
+}
+
+export interface GeometryProfileRecord {
+    id: number;
+    profileName: string;
+    modeType: "NORMAL" | "HDR" | string;
+    imageWidth: number | null;
+    imageHeight: number | null;
+    sourceMode: string;
+    dispersionAxis: string;
+    rotateDegrees: number;
+    flipX: boolean;
+    flipY: boolean;
+    tiltCorrectionEnabled: boolean;
+    maxShiftPixels: number | null;
+    roi: SpectrumRoi;
+    enabled: boolean;
+    algorithmVersion: string;
+    details: Record<string, unknown> | null;
+    createdAt: string | null;
+    updatedAt: string | null;
+}
+
+export interface GeometryCorrectionRequest {
+    profileId?: number | null;
+    useEnabledProfile?: boolean;
+    modeType?: "NORMAL" | "HDR";
+    profileName?: string;
+    sourceMode?: "AUTO" | "ORIGINAL" | "CALIBRATED" | "PROCESSED";
+    dispersionAxis?: "AUTO" | "X" | "Y";
+    rotateDegrees?: 0 | 90 | 180 | 270;
+    flipX?: boolean;
+    flipY?: boolean;
+    tiltCorrectionEnabled?: boolean;
+    maxShiftPixels?: number | null;
+    roi?: Partial<SpectrumRoi>;
+    saveAsEnabledProfile?: boolean;
+}
+
+export interface GeometryCorrectionRecord {
+    id: number | null;
+    imageId: number;
+    captureId: number;
+    profileId: number | null;
+    modeType: "NORMAL" | "HDR" | string;
+    sourceMode: string;
+    sourceQualityStatus: string;
+    dispersionAxis: string;
+    roi: SpectrumRoi;
+    orientationApplied: boolean;
+    rotateDegrees: number;
+    flipX: boolean;
+    flipY: boolean;
+    tiltCorrectionApplied: boolean;
+    maxShiftPixels: number;
+    shiftMin: number;
+    shiftMax: number;
+    shiftMeanAbs: number;
+    axisConfidence: number;
+    width: number;
+    height: number;
+    outputRawStorageUri: string | null;
+    outputPreviewStorageUri: string | null;
+    imageDataUrl: string;
+    algorithmVersion: string;
+    summaryMessage: string;
+    details: Record<string, unknown> | null;
+    createdAt: string | null;
 }
 
 export interface StatusRecord {
