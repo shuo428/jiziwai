@@ -16,6 +16,10 @@ public class SpectrumExtractionResponse {
     private Long captureId;
     private String sourceMode;
     private String sourceQualityStatus;
+    private Boolean geometryCorrectionApplied;
+    private Long geometryCorrectionId;
+    private Long geometryProfileId;
+    private String geometrySummaryMessage;
     private String wavelengthAxis;
     private Roi roi;
     private Boolean rectified;

@@ -12,6 +12,10 @@ import springbootjni.dto.jni.CalibrationGlobalSettingsResponse;
 import springbootjni.dto.jni.CalibrationPreviewResponse;
 import springbootjni.dto.jni.CalibrationSessionResponse;
 import springbootjni.dto.jni.FpgaPayloadPixelDataResponse;
+import springbootjni.dto.jni.GeometryCorrectionRequest;
+import springbootjni.dto.jni.GeometryCorrectionResponse;
+import springbootjni.dto.jni.GeometryProfileRequest;
+import springbootjni.dto.jni.GeometryProfileResponse;
 import springbootjni.dto.jni.ImageFrameResponse;
 import springbootjni.dto.jni.ImagePixelDataResponse;
 import springbootjni.dto.jni.MultiFrameAnalysisRequest;
@@ -23,8 +27,9 @@ import springbootjni.handler.WebSocketHandler;
 import springbootjni.jni.BridgeListener;
 import springbootjni.jni.SpectraBridgeNative;
 import springbootjni.service.JNIService;
-import springbootjni.service.SpectralImagePersistenceService;
 import springbootjni.service.SpectralCalibrationService;
+import springbootjni.service.SpectralGeometryCorrectionService;
+import springbootjni.service.SpectralImagePersistenceService;
 import springbootjni.service.SpectralMultiFrameQualityAnalysisService;
 import springbootjni.service.SpectralSpectrumExtractionService;
 
@@ -67,6 +72,7 @@ public class JNIServiceImpl implements JNIService {
     private final SpectralImagePersistenceService persistenceService;
     private final SpectralSpectrumExtractionService spectrumExtractionService;
     private final SpectralCalibrationService calibrationService;
+    private final SpectralGeometryCorrectionService geometryCorrectionService;
 
     /** 保护native桥对象和连接状态。 */
     private final Object bridgeLock = new Object();
@@ -621,6 +627,48 @@ public class JNIServiceImpl implements JNIService {
     @Override
     public SpectrumExtractionResponse getLatestSpectrum(Long userId, long imageId) {
         return spectrumExtractionService.getLatest(userId, imageId);
+    }
+
+    @Override
+    public List<GeometryProfileResponse> listGeometryProfiles(Long userId, String modeType) {
+        return geometryCorrectionService.listProfiles(userId, modeType);
+    }
+
+    @Override
+    public GeometryProfileResponse getEnabledGeometryProfile(Long userId, String modeType) {
+        return geometryCorrectionService.getEnabledProfile(userId, modeType);
+    }
+
+    @Override
+    public GeometryProfileResponse saveGeometryProfile(Long userId, GeometryProfileRequest request) {
+        ensureNoPendingCaptureForHistoryMutation();
+        return geometryCorrectionService.saveProfile(userId, request);
+    }
+
+    @Override
+    public boolean deleteGeometryProfile(Long userId, long profileId) {
+        ensureNoPendingCaptureForHistoryMutation();
+        return geometryCorrectionService.deleteProfile(userId, profileId);
+    }
+
+    @Override
+    public GeometryCorrectionResponse analyzeGeometryCorrection(Long userId,
+                                                               long imageId,
+                                                               GeometryCorrectionRequest request) {
+        return geometryCorrectionService.analyze(userId, imageId, request);
+    }
+
+    @Override
+    public GeometryCorrectionResponse correctGeometry(Long userId,
+                                                      long imageId,
+                                                      GeometryCorrectionRequest request) {
+        ensureNoPendingCaptureForHistoryMutation();
+        return geometryCorrectionService.correct(userId, imageId, request);
+    }
+
+    @Override
+    public GeometryCorrectionResponse getLatestGeometryCorrection(Long userId, long imageId) {
+        return geometryCorrectionService.getLatest(userId, imageId);
     }
 
     @Override

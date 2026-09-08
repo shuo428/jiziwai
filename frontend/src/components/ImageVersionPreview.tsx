@@ -5,7 +5,7 @@ import type { ImageFrameRecord } from "../types/jni";
 
 const { Text } = Typography;
 
-export type ImagePreviewVersionKey = "raw" | "calibrated" | "processed";
+export type ImagePreviewVersionKey = "raw" | "calibrated" | "processed" | "geometry";
 
 type PreviewVersion = {
     key: ImagePreviewVersionKey;
@@ -29,7 +29,7 @@ const clampZoom = (value: number): number => Math.max(0.5, Math.min(6, value));
 /**
  * 单帧多版本图像预览组件。
  *
- * raw / calibrated / processed 不再并排硬塞在同一个小区域里，而是一次只展示一个大图；
+ * raw / calibrated / processed / geometry-corrected 不再并排硬塞在同一个小区域里，而是一次只展示一个大图；
  * 研究人员可以通过版本按钮切换，也可以打开放大弹窗后用滚轮或按钮缩放观察细节。
  */
 const ImageVersionPreview: React.FC<ImageVersionPreviewProps> = ({
@@ -65,6 +65,13 @@ const ImageVersionPreview: React.FC<ImageVersionPreviewProps> = ({
                 url: frame.processedImageDataUrl,
                 tagColor: "green",
                 description: "质量处置策略进一步修复后的图像。",
+            },
+            {
+                key: "geometry",
+                label: "几何校正后",
+                url: frame.geometryImageDataUrl,
+                tagColor: "geekblue",
+                description: "基于可用 PASS 图像执行 ROI、方向、旋转/翻转和轻微倾斜矫正后的二维光谱图。",
             },
         ].filter((item) => Boolean(item.url));
     }, [frame, rawDescription, rawLabel]);

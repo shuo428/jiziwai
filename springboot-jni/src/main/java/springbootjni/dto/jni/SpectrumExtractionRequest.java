@@ -11,8 +11,11 @@ import lombok.Data;
  */
 @Data
 public class SpectrumExtractionRequest {
-    /** AUTO 优先使用处理后 PASS 图，其次校准后 PASS 图；ORIGINAL/CALIBRATED/PROCESSED 可指定图像版本。 */
+    /** AUTO 优先使用几何校正图，其次处理后/校准后/原始PASS图；也可指定 ORIGINAL/CALIBRATED/PROCESSED/GEOMETRY_CORRECTED。 */
     private String sourceMode;
+
+    /** sourceMode=AUTO 时是否优先使用最新几何校正图，默认 true。 */
+    private Boolean useGeometryCorrection;
 
     /** AUTO 自动判断波长方向；X 表示横向为波长方向；Y 表示纵向为波长方向。 */
     private String wavelengthAxis;

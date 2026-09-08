@@ -1080,7 +1080,15 @@ public class SpectralImagePersistenceService {
                         "qa.recommended_actions, qa.details AS quality_details, " +
                         "COALESCE(pa.details->>'processingStatus', pa.action_status) AS processing_status, " +
                         "pa.reason AS processing_message, " +
-                        "pa.details AS processing_details " +
+                        "pa.details AS processing_details, " +
+                        "gc.id AS geometry_correction_id, gc.profile_id AS geometry_profile_id, " +
+                        "gc.source_mode AS geometry_source_mode, gc.dispersion_axis AS geometry_dispersion_axis, " +
+                        "gc.width AS geometry_width, gc.height AS geometry_height, " +
+                        "gc.output_raw_storage_uri AS geometry_raw_storage_uri, " +
+                        "gc.output_preview_storage_uri AS geometry_preview_storage_uri, " +
+                        "gc.summary_message AS geometry_summary_message, " +
+                        "gc.transform_details::text AS geometry_details_json, " +
+                        "gc.created_at AS geometry_created_at " +
                         "FROM t_spectral_capture c " +
                         "JOIN t_spectral_image i ON i.capture_id=c.id " +
                         "LEFT JOIN t_image_integrity_analysis ia ON ia.capture_id=c.id " +
@@ -1091,6 +1099,14 @@ public class SpectralImagePersistenceService {
                         "    WHERE al.image_id=i.id AND al.action_type='CORRECT' " +
                         "    ORDER BY al.created_at DESC LIMIT 1 " +
                         ") pa ON TRUE " +
+                        "LEFT JOIN LATERAL ( " +
+                        "    SELECT g.id, g.profile_id, g.source_mode, g.dispersion_axis, g.width, g.height, " +
+                        "           g.output_raw_storage_uri, g.output_preview_storage_uri, " +
+                        "           g.summary_message, g.transform_details, g.created_at " +
+                        "    FROM t_image_geometry_correction g " +
+                        "    WHERE g.image_id=i.id " +
+                        "    ORDER BY g.created_at DESC LIMIT 1 " +
+                        ") gc ON TRUE " +
                         "WHERE c.user_id=? AND c.capture_scene=? ORDER BY i.received_at DESC LIMIT ?",
                 (resultSet, rowNum) -> mapStoredImageRow(resultSet),
                 userId,
@@ -1127,7 +1143,9 @@ public class SpectralImagePersistenceService {
                 "SELECT i.id AS image_id, i.width, i.height, i.pixel_format, i.readout_order, " +
                         "i.raw_storage_uri, " +
                         "i.calibrated_raw_storage_uri, " +
-                        "pa.details::text AS processing_details_json " +
+                        "pa.details::text AS processing_details_json, " +
+                        "gc.output_raw_storage_uri AS geometry_raw_storage_uri, " +
+                        "gc.width AS geometry_width, gc.height AS geometry_height " +
                         "FROM t_spectral_image i " +
                         "JOIN t_spectral_capture c ON c.id=i.capture_id " +
                         "LEFT JOIN LATERAL ( " +
@@ -1136,6 +1154,12 @@ public class SpectralImagePersistenceService {
                         "    WHERE al.image_id=i.id AND al.action_type='CORRECT' " +
                         "    ORDER BY al.created_at DESC LIMIT 1 " +
                         ") pa ON TRUE " +
+                        "LEFT JOIN LATERAL ( " +
+                        "    SELECT g.output_raw_storage_uri, g.width, g.height " +
+                        "    FROM t_image_geometry_correction g " +
+                        "    WHERE g.image_id=i.id " +
+                        "    ORDER BY g.created_at DESC LIMIT 1 " +
+                        ") gc ON TRUE " +
                         "WHERE i.id=? AND c.user_id=? AND c.capture_scene IN ('NORMAL','HDR','HDR_DARK','HDR_FLAT')",
                 (resultSet, rowNum) -> {
                     PixelSourceRow row = new PixelSourceRow();
@@ -1147,6 +1171,9 @@ public class SpectralImagePersistenceService {
                     row.rawStorageUri = resultSet.getString("raw_storage_uri");
                     row.calibratedRawStorageUri = resultSet.getString("calibrated_raw_storage_uri");
                     row.processingDetails = parseJsonMap(resultSet.getString("processing_details_json"));
+                    row.geometryRawStorageUri = resultSet.getString("geometry_raw_storage_uri");
+                    row.geometryWidth = (Integer) resultSet.getObject("geometry_width");
+                    row.geometryHeight = (Integer) resultSet.getObject("geometry_height");
                     return row;
                 },
                 imageId,
@@ -1163,8 +1190,9 @@ public class SpectralImagePersistenceService {
         String normalizedSource = sourceMode == null ? "ORIGINAL" : sourceMode.trim().toUpperCase();
         if (!"ORIGINAL".equals(normalizedSource)
                 && !"CALIBRATED".equals(normalizedSource)
-                && !"PROCESSED".equals(normalizedSource)) {
-            throw new IllegalArgumentException("source 只能是 ORIGINAL、CALIBRATED 或 PROCESSED");
+                && !"PROCESSED".equals(normalizedSource)
+                && !"GEOMETRY_CORRECTED".equals(normalizedSource)) {
+            throw new IllegalArgumentException("source 只能是 ORIGINAL、CALIBRATED、PROCESSED 或 GEOMETRY_CORRECTED");
         }
 
         String normalizedFormat = displayFormat == null ? "DN" : displayFormat.trim().toUpperCase();
@@ -1174,6 +1202,8 @@ public class SpectralImagePersistenceService {
             throw new IllegalArgumentException("format 只能是 DN、HEX_WORD 或 HEX_FILE");
         }
 
+        int sourceWidth = source.width;
+        int sourceHeight = source.height;
         String rawUri = source.rawStorageUri;
         if ("CALIBRATED".equals(normalizedSource)) {
             rawUri = source.calibratedRawStorageUri;
@@ -1185,16 +1215,23 @@ public class SpectralImagePersistenceService {
             if (rawUri == null || rawUri.trim().isEmpty()) {
                 throw new IllegalStateException("当前图像还没有处理后RAW像素，请先完成图像处理");
             }
+        } else if ("GEOMETRY_CORRECTED".equals(normalizedSource)) {
+            rawUri = source.geometryRawStorageUri;
+            sourceWidth = source.geometryWidth == null ? 0 : source.geometryWidth;
+            sourceHeight = source.geometryHeight == null ? 0 : source.geometryHeight;
+            if (rawUri == null || rawUri.trim().isEmpty() || sourceWidth <= 0 || sourceHeight <= 0) {
+                throw new IllegalStateException("当前图像还没有几何校正后RAW像素，请先在光谱几何校正模块生成校正图。");
+            }
         }
 
-        int x = fullFrame ? 0 : clampPixelWindowStart(xStart, source.width);
-        int y = fullFrame ? 0 : clampPixelWindowStart(yStart, source.height);
-        int roiWidth = fullFrame ? source.width : clampPixelWindowSize(windowWidth, source.width - x);
-        int roiHeight = fullFrame ? source.height : clampPixelWindowSize(windowHeight, source.height - y);
+        int x = fullFrame ? 0 : clampPixelWindowStart(xStart, sourceWidth);
+        int y = fullFrame ? 0 : clampPixelWindowStart(yStart, sourceHeight);
+        int roiWidth = fullFrame ? sourceWidth : clampPixelWindowSize(windowWidth, sourceWidth - x);
+        int roiHeight = fullFrame ? sourceHeight : clampPixelWindowSize(windowHeight, sourceHeight - y);
 
         byte[] rawBytes;
         try {
-            rawBytes = readRaw16LeBytes(resolveStorageUri(rawUri), source.width * source.height);
+            rawBytes = readRaw16LeBytes(resolveStorageUri(rawUri), sourceWidth * sourceHeight);
         } catch (IOException ex) {
             throw new IllegalStateException("读取RAW16像素失败: " + ex.getMessage(), ex);
         }
@@ -1208,7 +1245,7 @@ public class SpectralImagePersistenceService {
         for (int rowIndex = 0; rowIndex < roiHeight; rowIndex++) {
             List<Integer> pixelRow = hexFormat ? Collections.emptyList() : new ArrayList<>();
             StringBuilder hexRow = hexFormat ? new StringBuilder(roiWidth * 7) : null;
-            int sourceOffset = (y + rowIndex) * source.width + x;
+            int sourceOffset = (y + rowIndex) * sourceWidth + x;
             for (int columnIndex = 0; columnIndex < roiWidth; columnIndex++) {
                 int pixelIndex = sourceOffset + columnIndex;
                 int byteIndex = pixelIndex * Short.BYTES;
@@ -1246,13 +1283,15 @@ public class SpectralImagePersistenceService {
         response.setImageId(source.imageId);
         response.setSourceMode(normalizedSource);
         response.setSourceLabel(pixelSourceLabel(normalizedSource, responseReadoutOrder));
-        response.setSpatialOrder(isRowMajorReadout(responseReadoutOrder)
+        response.setSpatialOrder("GEOMETRY_CORRECTED".equals(normalizedSource)
+                ? "ROW_MAJOR_GEOMETRY_CORRECTED_IMAGE_ORDER"
+                : isRowMajorReadout(responseReadoutOrder)
                 ? "ROW_MAJOR_NORMAL_IMAGE_ORDER"
                 : "ROW_MAJOR_AFTER_SENSOR_READOUT_REORDER");
         response.setReadoutOrder(responseReadoutOrder);
         response.setSourceDescription(pixelSourceDescription(normalizedSource, responseReadoutOrder));
-        response.setWidth(source.width);
-        response.setHeight(source.height);
+        response.setWidth(sourceWidth);
+        response.setHeight(sourceHeight);
         response.setXStart(x);
         response.setYStart(y);
         response.setXEnd(x + roiWidth);
@@ -2382,6 +2421,9 @@ public class SpectralImagePersistenceService {
 
     private String pixelSourceLabel(String normalizedSource, String readoutOrder) {
         boolean rowMajor = isRowMajorReadout(readoutOrder);
+        if ("GEOMETRY_CORRECTED".equals(normalizedSource)) {
+            return "几何校正后 RAW16";
+        }
         if ("PROCESSED".equals(normalizedSource)) {
             return rowMajor ? "处理后 RAW16（正常行列）" : "处理后 RAW16（已重排）";
         }
@@ -2393,6 +2435,12 @@ public class SpectralImagePersistenceService {
 
     private String pixelSourceDescription(String normalizedSource, String readoutOrder) {
         String label = pixelSourceLabel(normalizedSource, readoutOrder);
+        if ("GEOMETRY_CORRECTED".equals(normalizedSource)) {
+            return label
+                    + "；该 RAW16 文件来自 geometry/geometry-corrected.raw16le.bin，"
+                    + "是在可用 PASS 输入图像基础上执行 ROI、旋转/翻转、波长方向判断和轻微倾斜矫正后保存的二维光谱图。"
+                    + "它用于后续一维光谱提取，坐标已经是几何校正后的正常二维坐标。";
+        }
         if (isRowMajorReadout(readoutOrder)) {
             return label
                     + "；坐标已经是正常行列顺序。当前读出顺序为 ROW_MAJOR，表示 FPGA payload 本身已经按正常行列发送，"
@@ -2775,6 +2823,17 @@ public class SpectralImagePersistenceService {
         row.processingStatus = resultSet.getString("processing_status");
         row.processingMessage = resultSet.getString("processing_message");
         row.processingDetails = parseJsonMap(resultSet.getString("processing_details"));
+        row.geometryCorrectionId = (Long) resultSet.getObject("geometry_correction_id");
+        row.geometryProfileId = (Long) resultSet.getObject("geometry_profile_id");
+        row.geometrySourceMode = resultSet.getString("geometry_source_mode");
+        row.geometryDispersionAxis = resultSet.getString("geometry_dispersion_axis");
+        row.geometryWidth = (Integer) resultSet.getObject("geometry_width");
+        row.geometryHeight = (Integer) resultSet.getObject("geometry_height");
+        row.geometryRawStorageUri = resultSet.getString("geometry_raw_storage_uri");
+        row.geometryPreviewStorageUri = resultSet.getString("geometry_preview_storage_uri");
+        row.geometrySummaryMessage = resultSet.getString("geometry_summary_message");
+        row.geometryDetails = parseJsonMap(resultSet.getString("geometry_details_json"));
+        row.geometryCorrectedAt = resultSet.getObject("geometry_created_at", OffsetDateTime.class);
         return row;
     }
 
@@ -2931,6 +2990,22 @@ public class SpectralImagePersistenceService {
         if (row.lgPreviewStorageUri != null && !row.lgPreviewStorageUri.trim().isEmpty()) {
             response.setLgImageDataUrl(encodePreviewDataUrl(resolveStorageUri(row.lgPreviewStorageUri)));
         }
+        response.setGeometryCorrectionId(row.geometryCorrectionId);
+        response.setGeometryProfileId(row.geometryProfileId);
+        response.setGeometrySourceMode(row.geometrySourceMode);
+        response.setGeometryDispersionAxis(row.geometryDispersionAxis);
+        response.setGeometryWidth(row.geometryWidth);
+        response.setGeometryHeight(row.geometryHeight);
+        response.setGeometryRawStorageUri(row.geometryRawStorageUri);
+        response.setGeometryPreviewStorageUri(row.geometryPreviewStorageUri);
+        response.setGeometrySummaryMessage(row.geometrySummaryMessage);
+        response.setGeometryDetails(row.geometryDetails == null
+                ? Collections.emptyMap()
+                : new LinkedHashMap<>(row.geometryDetails));
+        response.setGeometryCorrectedAt(row.geometryCorrectedAt);
+        if (row.geometryPreviewStorageUri != null && !row.geometryPreviewStorageUri.trim().isEmpty()) {
+            response.setGeometryImageDataUrl(encodePreviewDataUrl(resolveStorageUri(row.geometryPreviewStorageUri)));
+        }
         return response;
     }
 
@@ -3042,6 +3117,9 @@ public class SpectralImagePersistenceService {
         private String readoutOrder;
         private String rawStorageUri;
         private String calibratedRawStorageUri;
+        private String geometryRawStorageUri;
+        private Integer geometryWidth;
+        private Integer geometryHeight;
         private Map<String, Object> processingDetails = Collections.emptyMap();
     }
 
@@ -3140,6 +3218,17 @@ public class SpectralImagePersistenceService {
         private String processingStatus;
         private String processingMessage;
         private Map<String, Object> processingDetails = Collections.emptyMap();
+        private Long geometryCorrectionId;
+        private Long geometryProfileId;
+        private String geometrySourceMode;
+        private String geometryDispersionAxis;
+        private Integer geometryWidth;
+        private Integer geometryHeight;
+        private String geometryRawStorageUri;
+        private String geometryPreviewStorageUri;
+        private String geometrySummaryMessage;
+        private Map<String, Object> geometryDetails = Collections.emptyMap();
+        private OffsetDateTime geometryCorrectedAt;
 
         private QualityAnalysisResult toQualityAnalysisResult() {
             if (qualityStatus == null) {

@@ -68,6 +68,7 @@ type QualityMetricSource = {
 
 type QualityViewMode = "before" | "after";
 type HistoryScene = "NORMAL" | "HDR";
+type ManagedSpectrumSourceMode = "ORIGINAL" | "CALIBRATED" | "PROCESSED" | "GEOMETRY_CORRECTED";
 
 type SpectralDataManagementPageProps = {
     scene?: HistoryScene;
@@ -165,6 +166,9 @@ const originalImageSourceLabel = (frame?: ImageFrameRecord | null): string =>
     isRowMajorFrame(frame) ? "正常行列原图" : "重排后原图";
 
 const spectrumSourceLabel = (sourceMode?: string | null, frame?: ImageFrameRecord | null): string => {
+    if (sourceMode === "GEOMETRY_CORRECTED") {
+        return "几何校正后图像";
+    }
     if (sourceMode === "PROCESSED") {
         return "处理后图像";
     }
@@ -221,6 +225,38 @@ const buildHdrPlanePreviewItems = (frame: ImageFrameRecord | null): HdrPlanePrev
 const canExtractSpectrum = (frame: ImageFrameRecord | null, useProcessedSource: boolean): boolean =>
     useProcessedSource ? frame?.processedQualityStatus === "PASS" : frame?.qualityStatus === "PASS";
 
+const hasGeometryCorrection = (frame: ImageFrameRecord | null): boolean =>
+    Boolean(frame?.geometryCorrectionId && frame.geometryImageDataUrl);
+
+const getPreferredSpectrumSourceMode = (
+    frame: ImageFrameRecord | null,
+    useProcessedSource: boolean,
+): ManagedSpectrumSourceMode => {
+    if (hasGeometryCorrection(frame)) {
+        return "GEOMETRY_CORRECTED";
+    }
+    if (useProcessedSource) {
+        return "PROCESSED";
+    }
+    return frame?.calibratedImageDataUrl ? "CALIBRATED" : "ORIGINAL";
+};
+
+const getSpectrumSourceDimensions = (
+    frame: ImageFrameRecord | null,
+    sourceMode: ManagedSpectrumSourceMode,
+): { width: number; height: number } => {
+    if (!frame) {
+        return { width: 0, height: 0 };
+    }
+    if (sourceMode === "GEOMETRY_CORRECTED") {
+        return {
+            width: frame.geometryWidth && frame.geometryWidth > 0 ? frame.geometryWidth : frame.width,
+            height: frame.geometryHeight && frame.geometryHeight > 0 ? frame.geometryHeight : frame.height,
+        };
+    }
+    return { width: frame.width, height: frame.height };
+};
+
 const getSpectrumExtractionDisabledReason = (
     frame: ImageFrameRecord | null,
     useProcessedSource: boolean,
@@ -238,6 +274,21 @@ const getSpectrumExtractionDisabledReason = (
             : `当前查看的是${beforeSourceLabel}，只有质量为PASS时才能提取一维光谱。`;
     }
     return null;
+};
+
+const getSpectrumExtractionDisabledReasonForSource = (
+    frame: ImageFrameRecord | null,
+    sourceMode: ManagedSpectrumSourceMode,
+): string | null => {
+    if (!frame) {
+        return "请选择一张图像。";
+    }
+    if (sourceMode === "GEOMETRY_CORRECTED") {
+        return hasGeometryCorrection(frame)
+            ? null
+            : "当前图像还没有几何校正结果，请先在光谱几何校正模块生成校正图。";
+    }
+    return getSpectrumExtractionDisabledReason(frame, sourceMode === "PROCESSED");
 };
 
 const sanitizeRoiDraft = (roi: Partial<SpectrumRoi>): SpectrumExtractionRequest["roi"] => {
@@ -752,8 +803,8 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
         }
     };
 
-    const handleExtractSpectrum = async (record: ImageFrameRecord, useProcessedSource: boolean) => {
-        const disabledReason = getSpectrumExtractionDisabledReason(record, useProcessedSource);
+    const handleExtractSpectrum = async (record: ImageFrameRecord, sourceMode: ManagedSpectrumSourceMode) => {
+        const disabledReason = getSpectrumExtractionDisabledReasonForSource(record, sourceMode);
         if (disabledReason) {
             toast.warning(disabledReason);
             return;
@@ -761,19 +812,19 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
 
         setExtractingSpectrumImageId(record.id);
         try {
-            const sourceMode = useProcessedSource
-                ? "PROCESSED"
-                : record.calibratedImageDataUrl
-                  ? "CALIBRATED"
-                  : "ORIGINAL";
+            const geometryAxis =
+                record.geometryDispersionAxis === "X" || record.geometryDispersionAxis === "Y"
+                    ? record.geometryDispersionAxis
+                    : null;
             const request: SpectrumExtractionRequest = {
                 sourceMode,
-                wavelengthAxis: spectrumAxis,
-                rectifyTilt: spectrumRectifyTilt,
+                useGeometryCorrection: sourceMode === "GEOMETRY_CORRECTED",
+                wavelengthAxis: sourceMode === "GEOMETRY_CORRECTED" ? geometryAxis ?? spectrumAxis : spectrumAxis,
+                rectifyTilt: sourceMode === "GEOMETRY_CORRECTED" ? false : spectrumRectifyTilt,
                 integrationMethod: spectrumIntegrationMethod,
                 roi: sanitizeRoiDraft(spectrumRoi),
             };
-            if (typeof spectrumMaxShiftPixels === "number") {
+            if (sourceMode !== "GEOMETRY_CORRECTED" && typeof spectrumMaxShiftPixels === "number") {
                 request.maxShiftPixels = spectrumMaxShiftPixels;
             }
             const result = await jniBridgeService.extractSpectrum(record.id, request);
@@ -842,22 +893,24 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
         : selectedFrame?.dispositionStatus ?? null;
     const selectedBeforeScopeLabel = selectedFrame?.calibratedImageDataUrl ? "校准后" : "原图";
     const selectedSummaryScopeLabel = selectedSummaryUsesProcessed ? "复检" : selectedBeforeScopeLabel;
-    const selectedSpectrumSourceMode = selectedSummaryUsesProcessed
-        ? "PROCESSED"
-        : selectedFrame?.calibratedImageDataUrl
-          ? "CALIBRATED"
-          : "ORIGINAL";
+    const selectedSpectrumSourceMode = getPreferredSpectrumSourceMode(selectedFrame, selectedSummaryUsesProcessed);
     const selectedSpectrumSourceLabel = spectrumSourceLabel(selectedSpectrumSourceMode, selectedFrame);
-    const selectedSpectrumDisabledReason = getSpectrumExtractionDisabledReason(
+    const selectedSpectrumDisabledReason = getSpectrumExtractionDisabledReasonForSource(
         selectedFrame,
-        selectedSummaryUsesProcessed,
+        selectedSpectrumSourceMode,
+    );
+    const selectedSpectrumDimensions = getSpectrumSourceDimensions(selectedFrame, selectedSpectrumSourceMode);
+    const selectedSpectrumMatchesCurrentSource = Boolean(
+        spectrumResult &&
+            (spectrumResult.sourceMode === selectedSpectrumSourceMode ||
+                (selectedSpectrumSourceMode === "GEOMETRY_CORRECTED" && spectrumResult.geometryCorrectionApplied)),
     );
     const selectedSpectrumResult =
-        !selectedSpectrumDisabledReason && spectrumResult?.sourceMode === selectedSpectrumSourceMode
+        !selectedSpectrumDisabledReason && selectedSpectrumMatchesCurrentSource
             ? spectrumResult
             : null;
     const selectedSpectrumMismatchMessage =
-        !selectedSpectrumDisabledReason && spectrumResult && spectrumResult.sourceMode !== selectedSpectrumSourceMode
+        !selectedSpectrumDisabledReason && spectrumResult && !selectedSpectrumMatchesCurrentSource
             ? `当前已有光谱来自${spectrumSourceLabel(spectrumResult.sourceMode, selectedFrame)}；当前查看的是${selectedSpectrumSourceLabel}，请切换质量视图或重新提取。`
             : null;
     const selectedCounterpartScopeLabel = selectedSummaryUsesProcessed ? selectedBeforeScopeLabel : "复检";
@@ -880,13 +933,21 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
             key: "imageDataUrl",
             width: 120,
             render: (_, record) => {
-                const previewUrl = record.processedImageDataUrl || record.calibratedImageDataUrl || record.imageDataUrl;
-                const previewLabel = record.processedImageDataUrl
+                const previewUrl =
+                    record.geometryImageDataUrl ||
+                    record.processedImageDataUrl ||
+                    record.calibratedImageDataUrl ||
+                    record.imageDataUrl;
+                const previewLabel = record.geometryImageDataUrl
+                    ? "几何校正预览"
+                    : record.processedImageDataUrl
                     ? "处理后预览"
                     : record.calibratedImageDataUrl
                       ? "校准后预览"
                       : "原图预览";
-                const previewColor = record.processedImageDataUrl
+                const previewColor = record.geometryImageDataUrl
+                    ? "geekblue"
+                    : record.processedImageDataUrl
                     ? "green"
                     : record.calibratedImageDataUrl
                       ? "cyan"
@@ -978,6 +1039,9 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
                         </Tag>
                         <Tag color={getProcessingDisplay(record).color} className="mt-2">
                             处理 {getProcessingDisplay(record).label}
+                        </Tag>
+                        <Tag color={hasGeometryCorrection(record) ? "geekblue" : "default"} className="mt-2">
+                            几何校正 {hasGeometryCorrection(record) ? "已生成" : "未生成"}
                         </Tag>
                         {hasProcessedQualityResult(record) && (
                             <div className="mt-1 text-xs text-slate-400">
@@ -1163,7 +1227,9 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
                             <ImageVersionPreview
                                 frame={selectedFrame}
                                 defaultVersion={
-                                    selectedSummaryUsesProcessed
+                                    selectedFrame.geometryImageDataUrl
+                                        ? "geometry"
+                                        : selectedSummaryUsesProcessed
                                         ? "processed"
                                         : selectedFrame.calibratedImageDataUrl
                                           ? "calibrated"
@@ -1345,8 +1411,38 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
                                     </div>
                                 </div>
                                 <div className="min-w-0 rounded bg-white px-2 py-2">
+                                    <Text className="text-xs text-slate-500">几何校正</Text>
+                                    <div className="mt-1 flex flex-wrap gap-1">
+                                        <Tag
+                                            color={hasGeometryCorrection(selectedFrame) ? "geekblue" : "default"}
+                                            className="m-0 max-w-full whitespace-normal break-all leading-5"
+                                        >
+                                            {hasGeometryCorrection(selectedFrame)
+                                                ? `已生成 #${selectedFrame.geometryCorrectionId}`
+                                                : "未生成"}
+                                        </Tag>
+                                        {hasGeometryCorrection(selectedFrame) && selectedFrame.geometryDispersionAxis && (
+                                            <Tag color="blue" className="m-0">
+                                                方向 {selectedFrame.geometryDispersionAxis}
+                                            </Tag>
+                                        )}
+                                        {hasGeometryCorrection(selectedFrame) && (
+                                            <Tag color="purple" className="m-0">
+                                                {selectedFrame.geometryWidth || selectedFrame.width}×{selectedFrame.geometryHeight || selectedFrame.height}
+                                            </Tag>
+                                        )}
+                                    </div>
+                                    {selectedFrame.geometrySummaryMessage && (
+                                        <div className="mt-1 line-clamp-2 text-[11px] leading-5 text-slate-400">
+                                            {selectedFrame.geometrySummaryMessage}
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="min-w-0 rounded bg-white px-2 py-2">
                                     <Text className="mb-1 block text-xs text-slate-500">
-                                        {selectedFrame.captureScene === "HDR"
+                                        {hasGeometryCorrection(selectedFrame)
+                                            ? "当前链路RAW16像素"
+                                            : selectedFrame.captureScene === "HDR"
                                             ? "融合主图RAW16像素"
                                             : selectedFrame.readoutOrder === "ROW_MAJOR"
                                               ? "正常行列RAW16像素"
@@ -1356,14 +1452,18 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
                                         <ImagePixelDataViewer
                                             frame={selectedFrame}
                                             defaultSource={
-                                                selectedSummaryUsesProcessed
+                                                hasGeometryCorrection(selectedFrame)
+                                                    ? "GEOMETRY_CORRECTED"
+                                                    : selectedSummaryUsesProcessed
                                                     ? "PROCESSED"
                                                     : selectedFrame.calibratedImageDataUrl
                                                       ? "CALIBRATED"
                                                       : "ORIGINAL"
                                             }
                                             triggerLabel={
-                                                selectedFrame.captureScene === "HDR"
+                                                hasGeometryCorrection(selectedFrame)
+                                                    ? "查看几何校正后RAW16像素"
+                                                    : selectedFrame.captureScene === "HDR"
                                                     ? "查看融合主图RAW16像素"
                                                     : selectedFrame.readoutOrder === "ROW_MAJOR"
                                                       ? "查看正常行列RAW16像素"
@@ -1632,6 +1732,12 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
                                         {selectedSpectrumDisabledReason ? "等待当前视图PASS" : `可提取·${selectedSpectrumSourceLabel}`}
                                     </Tag>
                                 </div>
+                                {selectedSpectrumSourceMode === "GEOMETRY_CORRECTED" && (
+                                    <div className="mb-3 rounded-md border border-blue-100 bg-white/80 p-2 text-xs leading-5 text-slate-600">
+                                        当前图像已生成几何校正图，一维光谱默认从几何校正后的 RAW16 提取；
+                                        该版本已经完成方向、ROI 和轻微倾斜校正，提取时不会再次做倾斜矫正。
+                                    </div>
+                                )}
 
                                 <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                                     <div>
@@ -1687,17 +1793,17 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
                                             <InputNumber
                                                 value={spectrumRoi[key]}
                                                 min={0}
-                                                max={key.startsWith("x") ? selectedFrame.width : selectedFrame.height}
+                                                max={key.startsWith("x") ? selectedSpectrumDimensions.width : selectedSpectrumDimensions.height}
                                                 className="w-full"
                                                 disabled={Boolean(selectedSpectrumDisabledReason)}
                                                 placeholder={
                                                     key === "xStart"
                                                         ? "0"
                                                         : key === "xEnd"
-                                                          ? String(selectedFrame.width)
+                                                          ? String(selectedSpectrumDimensions.width)
                                                           : key === "yStart"
                                                             ? "0"
-                                                            : String(selectedFrame.height)
+                                                            : String(selectedSpectrumDimensions.height)
                                                 }
                                                 onChange={(value) =>
                                                     setSpectrumRoi((state) => ({
@@ -1712,11 +1818,13 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
 
                                 <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                                     <Checkbox
-                                        checked={spectrumRectifyTilt}
-                                        disabled={Boolean(selectedSpectrumDisabledReason)}
+                                        checked={selectedSpectrumSourceMode === "GEOMETRY_CORRECTED" ? false : spectrumRectifyTilt}
+                                        disabled={Boolean(selectedSpectrumDisabledReason) || selectedSpectrumSourceMode === "GEOMETRY_CORRECTED"}
                                         onChange={(event) => setSpectrumRectifyTilt(event.target.checked)}
                                     >
-                                        提取前进行轻微倾斜矫正
+                                        {selectedSpectrumSourceMode === "GEOMETRY_CORRECTED"
+                                            ? "几何校正后图像已完成倾斜矫正"
+                                            : "提取前进行轻微倾斜矫正"}
                                     </Checkbox>
                                     <Button
                                         type="primary"
@@ -1725,7 +1833,7 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
                                             Boolean(selectedSpectrumDisabledReason) || extractingSpectrumImageId !== null
                                         }
                                         title={selectedSpectrumDisabledReason || `从${selectedSpectrumSourceLabel}提取一维像素域光谱`}
-                                        onClick={() => handleExtractSpectrum(selectedFrame, selectedSummaryUsesProcessed)}
+                                        onClick={() => handleExtractSpectrum(selectedFrame, selectedSpectrumSourceMode)}
                                     >
                                         提取一维光谱
                                     </Button>

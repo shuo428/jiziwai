@@ -13,6 +13,10 @@ import springbootjni.dto.jni.CalibrationGlobalSettingsResponse;
 import springbootjni.dto.jni.CalibrationPreviewResponse;
 import springbootjni.dto.jni.CalibrationSessionResponse;
 import springbootjni.dto.jni.FpgaPayloadPixelDataResponse;
+import springbootjni.dto.jni.GeometryCorrectionRequest;
+import springbootjni.dto.jni.GeometryCorrectionResponse;
+import springbootjni.dto.jni.GeometryProfileRequest;
+import springbootjni.dto.jni.GeometryProfileResponse;
 import springbootjni.dto.jni.ImageFrameResponse;
 import springbootjni.dto.jni.ImagePixelDataResponse;
 import springbootjni.dto.jni.MultiFrameAnalysisRequest;
@@ -232,6 +236,110 @@ public class JNIController {
             return ApiResponse.success("Latest spectrum fetched successfully", spectrum);
         } catch (Exception e) {
             return ApiResponse.error("Failed to fetch latest spectrum: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 查询当前用户的二维光谱几何校正配置。
+     */
+    @GetMapping("/geometry/profiles")
+    public ApiResponse<List<GeometryProfileResponse>> listGeometryProfiles(
+            @RequestParam(required = false) String modeType) {
+        try {
+            return ApiResponse.success(
+                    "Geometry profiles fetched successfully",
+                    jniService.listGeometryProfiles(StpUtil.getLoginIdAsLong(), modeType));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch geometry profiles: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 获取当前模式已启用的几何校正配置。
+     */
+    @GetMapping("/geometry/profiles/enabled")
+    public ApiResponse<GeometryProfileResponse> getEnabledGeometryProfile(
+            @RequestParam(defaultValue = "NORMAL") String modeType) {
+        try {
+            return ApiResponse.success(
+                    "Enabled geometry profile fetched successfully",
+                    jniService.getEnabledGeometryProfile(StpUtil.getLoginIdAsLong(), modeType));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch enabled geometry profile: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 保存几何校正配置；enabled=true时会成为当前模式默认配置。
+     */
+    @PostMapping("/geometry/profiles")
+    public ApiResponse<GeometryProfileResponse> saveGeometryProfile(
+            @RequestBody GeometryProfileRequest request) {
+        try {
+            return ApiResponse.success(
+                    "Geometry profile saved successfully",
+                    jniService.saveGeometryProfile(StpUtil.getLoginIdAsLong(), request));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to save geometry profile: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 删除几何校正配置。已生成的图像几何校正结果不会被删除，只会失去配置外键引用。
+     */
+    @DeleteMapping("/geometry/profiles/{profileId}")
+    public ApiResponse<Boolean> deleteGeometryProfile(@PathVariable long profileId) {
+        try {
+            boolean deleted = jniService.deleteGeometryProfile(StpUtil.getLoginIdAsLong(), profileId);
+            return ApiResponse.success(deleted ? "Geometry profile deleted successfully" : "Geometry profile not found", deleted);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to delete geometry profile: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 只分析几何校正参数和偏移统计，不写入校正后RAW。
+     */
+    @PostMapping("/images/{imageId}/geometry/analyze")
+    public ApiResponse<GeometryCorrectionResponse> analyzeGeometryCorrection(
+            @PathVariable long imageId,
+            @RequestBody(required = false) GeometryCorrectionRequest request) {
+        try {
+            return ApiResponse.success(
+                    "Geometry correction analyzed successfully",
+                    jniService.analyzeGeometryCorrection(StpUtil.getLoginIdAsLong(), imageId, request));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to analyze geometry correction: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 执行二维几何校正并保存该图像的最新校正版本。
+     */
+    @PostMapping("/images/{imageId}/geometry/correct")
+    public ApiResponse<GeometryCorrectionResponse> correctGeometry(
+            @PathVariable long imageId,
+            @RequestBody(required = false) GeometryCorrectionRequest request) {
+        try {
+            return ApiResponse.success(
+                    "Geometry correction saved successfully",
+                    jniService.correctGeometry(StpUtil.getLoginIdAsLong(), imageId, request));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to save geometry correction: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 读取某张图最近一次二维几何校正结果。
+     */
+    @GetMapping("/images/{imageId}/geometry")
+    public ApiResponse<GeometryCorrectionResponse> getLatestGeometryCorrection(@PathVariable long imageId) {
+        try {
+            return ApiResponse.success(
+                    "Latest geometry correction fetched successfully",
+                    jniService.getLatestGeometryCorrection(StpUtil.getLoginIdAsLong(), imageId));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch latest geometry correction: " + e.getMessage());
         }
     }
 

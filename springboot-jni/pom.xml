@@ -87,7 +87,7 @@
                 <version>${spring-boot.version}</version>
                 <configuration>
                     <mainClass>springbootjni.SpringbootJniApplication</mainClass>
-                    <skip>true</skip>
+                    <skip>false</skip>
                 </configuration>
                 <executions>
                     <execution>

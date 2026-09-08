@@ -46,6 +46,7 @@ const buildSourceOptionLabels = (
             original: "HDR暗场诊断主图 RAW16",
             calibrated: "校准后HDR暗场诊断主图 RAW16",
             processed: "处理后HDR暗场诊断主图 RAW16",
+            geometry: "几何校正后HDR暗场诊断主图 RAW16",
         };
     }
     if (isHdrFlatFrame) {
@@ -53,6 +54,7 @@ const buildSourceOptionLabels = (
             original: "HDR平场诊断主图 RAW16",
             calibrated: "校准后HDR平场诊断主图 RAW16",
             processed: "处理后HDR平场诊断主图 RAW16",
+            geometry: "几何校正后HDR平场诊断主图 RAW16",
         };
     }
     if (isHdrFrame) {
@@ -60,6 +62,7 @@ const buildSourceOptionLabels = (
             original: "融合主图 RAW16",
             calibrated: "校准后融合主图 RAW16",
             processed: "处理后融合主图 RAW16",
+            geometry: "几何校正后融合主图 RAW16",
         };
     }
     if (isRowMajorFrame) {
@@ -67,12 +70,14 @@ const buildSourceOptionLabels = (
             original: "原图 RAW16（正常行列）",
             calibrated: "校准后 RAW16（正常行列）",
             processed: "处理后 RAW16（正常行列）",
+            geometry: "几何校正后 RAW16",
         };
     }
     return {
         original: "重排后原图 RAW16",
         calibrated: "校准后 RAW16（已重排）",
         processed: "处理后 RAW16（已重排）",
+        geometry: "几何校正后 RAW16",
     };
 };
 
@@ -151,7 +156,7 @@ const selectHexMatrixCell = (
  *
  * RAW16 像素查看器默认以 16 位字值展示两个十六进制字节，例如 00 A0。
  * 用户也可以切换成 DN 十进制窗口，或者读取整幅 800x600 的十六进制文本矩阵。
- * 原图、校准后图和处理后图都从后端 RAW 文件读取，避免把 8-bit 预览图误当成真实像素。
+ * 原图、校准后图、处理后图和几何校正后图都从后端 RAW 文件读取，避免把 8-bit 预览图误当成真实像素。
  * 注意：这里展示的是业务图像 RAW16。ROW_MAJOR 帧保持正常行列；GLUX1605 4-lane/HDR 帧保存为正常行列后的主图。
  */
 const ImagePixelDataViewer = ({
@@ -176,37 +181,23 @@ const ImagePixelDataViewer = ({
               ? "查看正常行列RAW16像素"
               : "查看重排后RAW16像素"
     );
-    const modalTitle = isHdrDarkFrame
-        ? "HDR 暗场诊断主图 RAW16 像素数据"
-        : isHdrFlatFrame
-        ? "HDR 平场诊断主图 RAW16 像素数据"
-        : isHdrFrame
-        ? "HDR 融合主图 RAW16 像素数据"
-        : isRowMajorFrame
-          ? "ROW_MAJOR 正常行列 RAW16 像素数据"
-          : "重排后 RAW16 像素数据";
-    const modalMessage = isHdrDarkFrame
-        ? "查看 HDR 暗场诊断合成主图的 RAW16 两字节像素"
-        : isHdrFlatFrame
-        ? "查看 HDR 平场诊断合成主图的 RAW16 两字节像素"
-        : isHdrFrame
-        ? "查看 HDR 融合主图的 RAW16 两字节像素"
-        : isRowMajorFrame
-          ? "查看 ROW_MAJOR 读出下的正常行列 RAW16 两字节像素"
-        : "查看已重排为正常行列坐标的 RAW16 两字节像素";
-    const modalDescription = isHdrDarkFrame
-        ? "这里读取的是 HDR 暗场样本保存的诊断合成主图 raw16le.bin；HG_DARK/LG_DARK 两个输入平面已经单独保存，主图仅用于预览和审计，不作为普通HDR光谱融合结果。默认按 16 位字值展示为高字节在前，例如 DN=0x00A0 显示 00 A0；如果切换为 RAW 文件字节序，则按 raw16le.bin 的小端落盘顺序显示，例如 A0 00。"
-        : isHdrFlatFrame
-        ? "这里读取的是 HDR 平场样本保存的诊断合成主图 raw16le.bin；HG_FLAT/LG_FLAT 两个输入平面已经单独保存，主图仅用于预览和审计，不作为普通HDR光谱融合结果。默认按 16 位字值展示为高字节在前，例如 DN=0x00A0 显示 00 A0；如果切换为 RAW 文件字节序，则按 raw16le.bin 的小端落盘顺序显示，例如 A0 00。"
-        : isHdrFrame
-        ? "这里读取的是 HDR 融合后保存为主图的 raw16le.bin、calibrated/raw16le.bin 或 processed/raw16le.bin；HG/LG 两个输入平面已经先按芯片 Figure 42 顺序转换成正常行列，再由 Java 端按 HDR 融合规则生成这张主图。默认按 16 位字值展示为高字节在前，例如 DN=0x00A0 显示 00 A0；如果切换为 RAW 文件字节序，则按 raw16le.bin 的小端落盘顺序显示，例如 A0 00。"
-        : isRowMajorFrame
-          ? "这里读取的是 raw16le.bin、calibrated/raw16le.bin 或 processed/raw16le.bin。当前帧读出顺序为 ROW_MAJOR，FPGA payload 本身就是正常行列顺序，native 只做 RAW16 低 12 位解析和保存，像素位置保持不变。默认按 16 位字值展示为高字节在前，例如 DN=0x00A0 显示 00 A0；如果切换为 RAW 文件字节序，则按 raw16le.bin 的小端落盘顺序显示，例如 A0 00。"
-        : "这里读取的是 raw16le.bin、calibrated/raw16le.bin 或 processed/raw16le.bin，均已按芯片读出顺序重排成正常二维坐标；FPGA 直接输出的跳跃/交织 payload 另存为 fpga_payload.bin。默认按 16 位字值展示为高字节在前，例如 DN=0x00A0 显示 00 A0；如果切换为 RAW 文件字节序，则按 raw16le.bin 的小端落盘顺序显示，例如 A0 00。";
     const sourceOptionLabels = buildSourceOptionLabels(isHdrFrame, isHdrDarkFrame, isHdrFlatFrame, isRowMajorFrame);
     const hasCalibratedRaw = Boolean(frame.calibratedImageDataUrl);
     const hasProcessedRaw = Boolean(frame.processedImageDataUrl);
+    const hasGeometryRaw = Boolean(frame.geometryImageDataUrl || frame.geometryRawStorageUri);
+    const getSourceDimensions = (source: ImagePixelSourceMode) => {
+        if (source === "GEOMETRY_CORRECTED") {
+            return {
+                width: frame.geometryWidth && frame.geometryWidth > 0 ? frame.geometryWidth : frame.width,
+                height: frame.geometryHeight && frame.geometryHeight > 0 ? frame.geometryHeight : frame.height,
+            };
+        }
+        return { width: frame.width, height: frame.height };
+    };
     const normalizeAvailableSource = (source: ImagePixelSourceMode): ImagePixelSourceMode => {
+        if (source === "GEOMETRY_CORRECTED" && hasGeometryRaw) {
+            return "GEOMETRY_CORRECTED";
+        }
         if (source === "PROCESSED" && hasProcessedRaw) {
             return "PROCESSED";
         }
@@ -219,6 +210,40 @@ const ImagePixelDataViewer = ({
     const [sourceMode, setSourceMode] = useState<ImagePixelSourceMode>(
         normalizeAvailableSource(defaultSource),
     );
+    const activeSourceDimensions = getSourceDimensions(sourceMode);
+    const modalTitle = sourceMode === "GEOMETRY_CORRECTED"
+        ? "几何校正后 RAW16 像素数据"
+        : isHdrDarkFrame
+        ? "HDR 暗场诊断主图 RAW16 像素数据"
+        : isHdrFlatFrame
+        ? "HDR 平场诊断主图 RAW16 像素数据"
+        : isHdrFrame
+        ? "HDR 融合主图 RAW16 像素数据"
+        : isRowMajorFrame
+          ? "ROW_MAJOR 正常行列 RAW16 像素数据"
+          : "重排后 RAW16 像素数据";
+    const modalMessage = sourceMode === "GEOMETRY_CORRECTED"
+        ? "查看几何校正后的 RAW16 两字节像素"
+        : isHdrDarkFrame
+        ? "查看 HDR 暗场诊断合成主图的 RAW16 两字节像素"
+        : isHdrFlatFrame
+        ? "查看 HDR 平场诊断合成主图的 RAW16 两字节像素"
+        : isHdrFrame
+        ? "查看 HDR 融合主图的 RAW16 两字节像素"
+        : isRowMajorFrame
+          ? "查看 ROW_MAJOR 读出下的正常行列 RAW16 两字节像素"
+        : "查看已重排为正常行列坐标的 RAW16 两字节像素";
+    const modalDescription = sourceMode === "GEOMETRY_CORRECTED"
+        ? "这里读取的是 geometry/geometry-corrected.raw16le.bin；它是在可用 PASS 图像基础上完成 ROI、方向、旋转/翻转和轻微倾斜矫正后保存的真实 RAW16 数据。默认按 16 位字值展示为高字节在前，例如 DN=0x00A0 显示 00 A0；如果切换为 RAW 文件字节序，则按 raw16le.bin 的小端落盘顺序显示，例如 A0 00。"
+        : isHdrDarkFrame
+        ? "这里读取的是 HDR 暗场样本保存的诊断合成主图 raw16le.bin；HG_DARK/LG_DARK 两个输入平面已经单独保存，主图仅用于预览和审计，不作为普通HDR光谱融合结果。默认按 16 位字值展示为高字节在前，例如 DN=0x00A0 显示 00 A0；如果切换为 RAW 文件字节序，则按 raw16le.bin 的小端落盘顺序显示，例如 A0 00。"
+        : isHdrFlatFrame
+        ? "这里读取的是 HDR 平场样本保存的诊断合成主图 raw16le.bin；HG_FLAT/LG_FLAT 两个输入平面已经单独保存，主图仅用于预览和审计，不作为普通HDR光谱融合结果。默认按 16 位字值展示为高字节在前，例如 DN=0x00A0 显示 00 A0；如果切换为 RAW 文件字节序，则按 raw16le.bin 的小端落盘顺序显示，例如 A0 00。"
+        : isHdrFrame
+        ? "这里读取的是 HDR 融合后保存为主图的 raw16le.bin、calibrated/raw16le.bin 或 processed/raw16le.bin；HG/LG 两个输入平面已经先按芯片 Figure 42 顺序转换成正常行列，再由 Java 端按 HDR 融合规则生成这张主图。默认按 16 位字值展示为高字节在前，例如 DN=0x00A0 显示 00 A0；如果切换为 RAW 文件字节序，则按 raw16le.bin 的小端落盘顺序显示，例如 A0 00。"
+        : isRowMajorFrame
+          ? "这里读取的是 raw16le.bin、calibrated/raw16le.bin 或 processed/raw16le.bin。当前帧读出顺序为 ROW_MAJOR，FPGA payload 本身就是正常行列顺序，native 只做 RAW16 低 12 位解析和保存，像素位置保持不变。默认按 16 位字值展示为高字节在前，例如 DN=0x00A0 显示 00 A0；如果切换为 RAW 文件字节序，则按 raw16le.bin 的小端落盘顺序显示，例如 A0 00。"
+        : "这里读取的是 raw16le.bin、calibrated/raw16le.bin 或 processed/raw16le.bin，均已按芯片读出顺序重排成正常二维坐标；FPGA 直接输出的跳跃/交织 payload 另存为 fpga_payload.bin。默认按 16 位字值展示为高字节在前，例如 DN=0x00A0 显示 00 A0；如果切换为 RAW 文件字节序，则按 raw16le.bin 的小端落盘顺序显示，例如 A0 00。";
     const [displayFormat, setDisplayFormat] = useState<ImagePixelDisplayFormat>("HEX_WORD");
     const [xStart, setXStart] = useState(0);
     const [yStart, setYStart] = useState(0);
@@ -252,6 +277,10 @@ const ImagePixelDataViewer = ({
             setErrorMessage("当前图像还没有处理后 RAW16 数据，请先完成图像处理。");
             return;
         }
+        if (requestSourceMode === "GEOMETRY_CORRECTED" && !hasGeometryRaw) {
+            setErrorMessage("当前图像还没有几何校正后 RAW16 数据，请先在光谱几何校正模块生成校正图。");
+            return;
+        }
         setLoading(true);
         setErrorMessage(null);
         setLocateFeedback(null);
@@ -281,16 +310,18 @@ const ImagePixelDataViewer = ({
 
     const loadFullFrameHexPixels = async () => {
         const hexFormat = displayFormat === "HEX_FILE" ? "HEX_FILE" : "HEX_WORD";
+        const dimensions = getSourceDimensions(sourceMode);
         setDisplayFormat(hexFormat);
-        await requestPixels(sourceMode, 0, 0, frame.width, frame.height, hexFormat, true);
+        await requestPixels(sourceMode, 0, 0, dimensions.width, dimensions.height, hexFormat, true);
     };
 
     useEffect(() => {
         if (!visible) {
             return;
         }
-        const defaultWidth = Math.min(DEFAULT_WINDOW_SIZE, Math.max(frame.width, 1));
-        const defaultHeight = Math.min(DEFAULT_WINDOW_SIZE, Math.max(frame.height, 1));
+        const dimensions = getSourceDimensions(resolvedDefaultSource);
+        const defaultWidth = Math.min(DEFAULT_WINDOW_SIZE, Math.max(dimensions.width, 1));
+        const defaultHeight = Math.min(DEFAULT_WINDOW_SIZE, Math.max(dimensions.height, 1));
         setSourceMode(resolvedDefaultSource);
         setDisplayFormat("HEX_WORD");
         setXStart(0);
@@ -306,7 +337,7 @@ const ImagePixelDataViewer = ({
         requestPixels(resolvedDefaultSource, 0, 0, defaultWidth, defaultHeight, "HEX_WORD", false);
         // 只在打开弹窗/切换图片时自动读取默认窗口；调整 ROI 后由用户点击“读取像素”刷新。
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [frame.id, frame.width, frame.height, resolvedDefaultSource, visible]);
+    }, [frame.id, frame.width, frame.height, frame.geometryWidth, frame.geometryHeight, resolvedDefaultSource, visible]);
 
     const tableColumns = useMemo(() => {
         const columns: any[] = [
@@ -498,7 +529,14 @@ const ImagePixelDataViewer = ({
                                 className="w-full"
                                 value={sourceMode}
                                 onChange={(value) => {
+                                    const dimensions = getSourceDimensions(value);
                                     setSourceMode(value);
+                                    setXStart(0);
+                                    setYStart(0);
+                                    setRoiWidth(Math.min(DEFAULT_WINDOW_SIZE, Math.max(dimensions.width, 1)));
+                                    setRoiHeight(Math.min(DEFAULT_WINDOW_SIZE, Math.max(dimensions.height, 1)));
+                                    setLocateX(0);
+                                    setLocateY(0);
                                     setPixelData(null);
                                     setErrorMessage(null);
                                 }}
@@ -514,11 +552,16 @@ const ImagePixelDataViewer = ({
                                         value: "PROCESSED",
                                         disabled: !hasProcessedRaw,
                                     },
+                                    {
+                                        label: sourceOptionLabels.geometry,
+                                        value: "GEOMETRY_CORRECTED",
+                                        disabled: !hasGeometryRaw,
+                                    },
                                 ]}
                             />
-                            {(!hasCalibratedRaw || !hasProcessedRaw) && (
+                            {(!hasCalibratedRaw || !hasProcessedRaw || !hasGeometryRaw) && (
                                 <Text className="mt-1 block text-[11px] text-slate-400">
-                                    校准后数据需采集时启用校准包；处理后数据需完成图像修复。
+                                    校准后数据需采集时启用校准包；处理后数据需完成图像修复；几何校正后数据需先生成校正图。
                                 </Text>
                             )}
                         </div>
@@ -544,7 +587,7 @@ const ImagePixelDataViewer = ({
                             <InputNumber
                                 className="w-full"
                                 min={0}
-                                max={Math.max(frame.width - 1, 0)}
+                                max={Math.max(activeSourceDimensions.width - 1, 0)}
                                 value={xStart}
                                 onChange={(value) => setXStart(Number(value ?? 0))}
                             />
@@ -554,7 +597,7 @@ const ImagePixelDataViewer = ({
                             <InputNumber
                                 className="w-full"
                                 min={0}
-                                max={Math.max(frame.height - 1, 0)}
+                                max={Math.max(activeSourceDimensions.height - 1, 0)}
                                 value={yStart}
                                 onChange={(value) => setYStart(Number(value ?? 0))}
                             />
@@ -586,7 +629,7 @@ const ImagePixelDataViewer = ({
                                         读取当前窗口
                                     </Button>
                                     <Button loading={loading} onClick={loadFullFrameHexPixels}>
-                                        读取完整 {frame.width}×{frame.height} HEX矩阵
+                                        读取完整 {activeSourceDimensions.width}×{activeSourceDimensions.height} HEX矩阵
                                     </Button>
                                 </Space>
                                 <div className="flex flex-wrap items-end gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5">
@@ -595,7 +638,7 @@ const ImagePixelDataViewer = ({
                                         <InputNumber
                                             size="small"
                                             min={0}
-                                            max={Math.max(frame.width - 1, 0)}
+                                            max={Math.max(activeSourceDimensions.width - 1, 0)}
                                             value={locateX}
                                             onChange={(value) => setLocateX(Number(value ?? 0))}
                                         />
@@ -605,7 +648,7 @@ const ImagePixelDataViewer = ({
                                         <InputNumber
                                             size="small"
                                             min={0}
-                                            max={Math.max(frame.height - 1, 0)}
+                                            max={Math.max(activeSourceDimensions.height - 1, 0)}
                                             value={locateY}
                                             onChange={(value) => setLocateY(Number(value ?? 0))}
                                         />
@@ -636,7 +679,9 @@ const ImagePixelDataViewer = ({
                             <div className="flex flex-wrap items-center gap-2">
                                 <Tag
                                     color={
-                                        pixelData.sourceMode === "PROCESSED"
+                                        pixelData.sourceMode === "GEOMETRY_CORRECTED"
+                                            ? "geekblue"
+                                            : pixelData.sourceMode === "PROCESSED"
                                             ? "green"
                                             : pixelData.sourceMode === "CALIBRATED"
                                               ? "cyan"

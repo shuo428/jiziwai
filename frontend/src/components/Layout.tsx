@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom';
 import { Layout as AntLayout, Menu, ConfigProvider, Button, Dropdown, Segmented, Tag } from 'antd';
 import type { MenuProps } from 'antd';
-import { Home, Cpu, Radio, LogOut, User, MessageSquare, ChevronLeft, ChevronRight, Database, Settings2, Layers } from 'lucide-react';
+import { Home, Cpu, Radio, LogOut, User, MessageSquare, ChevronLeft, ChevronRight, Database, Settings2, Layers, ScanLine } from 'lucide-react';
 import { useUserStore } from '../store/userStore';
 import { useJNIStore, type WorkMode } from '../store/jniStore';
 import { toast } from 'sonner';
@@ -59,6 +59,11 @@ const LayoutContent: React.FC = () => {
             label: <Link to="/calibration">普通校准与缺陷地图</Link>,
         },
         {
+            key: '/geometry-correction',
+            icon: <ScanLine size={18} />,
+            label: <Link to="/geometry-correction">光谱几何校正</Link>,
+        },
+        {
             key: '/spectral-management',
             icon: <Database size={18} />,
             label: <Link to="/spectral-management">普通图像管理</Link>,
@@ -80,6 +85,11 @@ const LayoutContent: React.FC = () => {
             key: '/hdr-calibration',
             icon: <Settings2 size={18} />,
             label: <Link to="/hdr-calibration">HDR校准与缺陷地图</Link>,
+        },
+        {
+            key: '/geometry-correction',
+            icon: <ScanLine size={18} />,
+            label: <Link to="/geometry-correction">光谱几何校正</Link>,
         },
         {
             key: '/hdr-management',
@@ -113,6 +123,7 @@ const LayoutContent: React.FC = () => {
         '/hdr-calibration': 'HDR校准与缺陷地图',
         '/hdr-management': 'HDR图像管理',
         '/hdr-dark-capture': 'HDR暗场采集',
+        '/geometry-correction': '光谱几何校正',
         '/config-management': '配置管理',
         '/spectral-management': '普通图像管理',
         '/calibration': '普通校准与缺陷地图',
@@ -140,6 +151,7 @@ const LayoutContent: React.FC = () => {
             '/hdr-calibration': '/calibration',
             '/hdr-management': '/spectral-management',
             '/hdr-dark-capture': '/calibration',
+            '/geometry-correction': '/geometry-correction',
         };
         const nextPath = counterpartMap[location.pathname] ?? location.pathname;
         if (nextPath !== location.pathname) {

@@ -8,6 +8,10 @@ import springbootjni.dto.jni.CalibrationGlobalSettingsResponse;
 import springbootjni.dto.jni.CalibrationPreviewResponse;
 import springbootjni.dto.jni.CalibrationSessionResponse;
 import springbootjni.dto.jni.FpgaPayloadPixelDataResponse;
+import springbootjni.dto.jni.GeometryCorrectionRequest;
+import springbootjni.dto.jni.GeometryCorrectionResponse;
+import springbootjni.dto.jni.GeometryProfileRequest;
+import springbootjni.dto.jni.GeometryProfileResponse;
 import springbootjni.dto.jni.ImageFrameResponse;
 import springbootjni.dto.jni.ImagePixelDataResponse;
 import springbootjni.dto.jni.MultiFrameAnalysisRequest;
@@ -72,6 +76,20 @@ public interface JNIService {
     SpectrumExtractionResponse extractSpectrum(Long userId, long imageId, SpectrumExtractionRequest request);
 
     SpectrumExtractionResponse getLatestSpectrum(Long userId, long imageId);
+
+    List<GeometryProfileResponse> listGeometryProfiles(Long userId, String modeType);
+
+    GeometryProfileResponse getEnabledGeometryProfile(Long userId, String modeType);
+
+    GeometryProfileResponse saveGeometryProfile(Long userId, GeometryProfileRequest request);
+
+    boolean deleteGeometryProfile(Long userId, long profileId);
+
+    GeometryCorrectionResponse analyzeGeometryCorrection(Long userId, long imageId, GeometryCorrectionRequest request);
+
+    GeometryCorrectionResponse correctGeometry(Long userId, long imageId, GeometryCorrectionRequest request);
+
+    GeometryCorrectionResponse getLatestGeometryCorrection(Long userId, long imageId);
 
     boolean deleteImage(Long userId, long imageId);
 
