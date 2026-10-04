@@ -18,6 +18,10 @@ import springbootjni.dto.jni.MultiFrameAnalysisRequest;
 import springbootjni.dto.jni.MultiFrameAnalysisResponse;
 import springbootjni.dto.jni.SpectrumExtractionRequest;
 import springbootjni.dto.jni.SpectrumExtractionResponse;
+import springbootjni.dto.jni.SpectrumAnalysisRequest;
+import springbootjni.dto.jni.SpectrumAnalysisResponse;
+import springbootjni.dto.jni.SpectrumPreprocessingRequest;
+import springbootjni.dto.jni.SpectrumPreprocessingResponse;
 import springbootjni.dto.jni.TriggerCaptureResponse;
 
 import java.util.List;
@@ -76,6 +80,16 @@ public interface JNIService {
     SpectrumExtractionResponse extractSpectrum(Long userId, long imageId, SpectrumExtractionRequest request);
 
     SpectrumExtractionResponse getLatestSpectrum(Long userId, long imageId);
+
+    SpectrumPreprocessingResponse preprocessSpectrum(Long userId, long imageId, SpectrumPreprocessingRequest request);
+
+    SpectrumPreprocessingResponse getLatestSpectrumPreprocessing(Long userId, long imageId);
+
+    SpectrumAnalysisResponse analyzeSpectrum(Long userId, long imageId, SpectrumAnalysisRequest request);
+
+    SpectrumAnalysisResponse getLatestSpectrumAnalysis(Long userId, long imageId);
+
+    List<SpectrumAnalysisResponse> listSpectrumAnalyses(Long userId, long imageId);
 
     List<GeometryProfileResponse> listGeometryProfiles(Long userId, String modeType);
 

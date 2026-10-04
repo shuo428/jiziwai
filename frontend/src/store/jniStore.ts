@@ -45,6 +45,7 @@ type JNIStore = {
         clearImageHistory: () => void;
         pushStatus: (status: StatusRecord) => void;
         pushConfigAck: (ack: ConfigAckRecord) => void;
+        clearDeviceFeedback: () => void;
         pushTransportError: (error: TransportErrorRecord) => void;
         setConfigByte: (index: number, value: number) => void;
         replaceConfigBytes: (values: number[]) => void;
@@ -242,6 +243,14 @@ export const useJNIStore = create<JNIStore>()(
                         const shouldSyncConnectionForm = Boolean(incomingState.connected);
                         return {
                             bridgeState: nextBridgeState,
+                            // 会话改变后旧应答失效；不能把上一次连接的成功状态带到新设备。
+                            ...(!nextBridgeState.connected ||
+                            nextBridgeState.connected !== state.bridgeState.connected ||
+                            nextBridgeState.host !== state.bridgeState.host ||
+                            nextBridgeState.controlPort !== state.bridgeState.controlPort ||
+                            nextBridgeState.imagePort !== state.bridgeState.imagePort
+                                ? { latestStatus: null, latestConfigAck: null }
+                                : {}),
                             connectionForm: shouldSyncConnectionForm
                                 ? {
                                       host: incomingState.host ?? state.connectionForm.host,
@@ -257,7 +266,10 @@ export const useJNIStore = create<JNIStore>()(
                         };
                     });
                 },
-                setWebsocketConnected: (connected) => set({ websocketConnected: connected }),
+                setWebsocketConnected: (connected) => set({
+                    websocketConnected: connected,
+                    ...(!connected ? { latestStatus: null, latestConfigAck: null } : {}),
+                }),
                 setError: (error: string | null) => {
                     set({ error });
                 },
@@ -311,6 +323,7 @@ export const useJNIStore = create<JNIStore>()(
                 pushConfigAck: (ack) => {
                     set({ latestConfigAck: ack });
                 },
+                clearDeviceFeedback: () => set({ latestStatus: null, latestConfigAck: null }),
                 pushTransportError: (transportError) => {
                     set((state) => ({
                         transportErrors: [transportError, ...state.transportErrors].slice(0, 50),

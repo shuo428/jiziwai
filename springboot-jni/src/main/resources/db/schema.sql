@@ -439,6 +439,87 @@ COMMENT ON TABLE t_spectrum_extraction IS '从PASS图像提取的一维像素域
 COMMENT ON COLUMN t_spectrum_extraction.spectrum_points IS 'pixelIndex-intensity点列，尚未做波长nm标定';
 COMMENT ON COLUMN t_spectrum_extraction.roi IS '本次提取使用的左闭右开ROI范围';
 
+CREATE TABLE IF NOT EXISTS t_spectrum_preprocessing (
+    id BIGSERIAL PRIMARY KEY,
+    spectrum_id BIGINT NOT NULL
+        REFERENCES t_spectrum_extraction(id) ON DELETE CASCADE,
+    image_id BIGINT NOT NULL
+        REFERENCES t_spectral_image(id) ON DELETE CASCADE,
+    capture_id BIGINT NOT NULL
+        REFERENCES t_spectral_capture(id) ON DELETE CASCADE,
+    user_id BIGINT
+        REFERENCES t_user(id) ON DELETE SET NULL,
+
+    preprocessing_steps JSONB NOT NULL DEFAULT '{}'::JSONB,
+    point_count INTEGER NOT NULL,
+    original_intensity_min NUMERIC(20, 8),
+    original_intensity_max NUMERIC(20, 8),
+    original_intensity_mean NUMERIC(20, 8),
+    processed_intensity_min NUMERIC(20, 8),
+    processed_intensity_max NUMERIC(20, 8),
+    processed_intensity_mean NUMERIC(20, 8),
+    dynamic_range_before NUMERIC(20, 8),
+    dynamic_range_after NUMERIC(20, 8),
+    noise_before NUMERIC(20, 8),
+    noise_after NUMERIC(20, 8),
+    spike_count INTEGER NOT NULL DEFAULT 0,
+    processed_points JSONB NOT NULL,
+
+    algorithm_version VARCHAR(64) NOT NULL,
+    summary_message TEXT,
+    details JSONB NOT NULL DEFAULT '{}'::JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_spectrum_preprocessing_spectrum
+    ON t_spectrum_preprocessing(spectrum_id);
+
+CREATE INDEX IF NOT EXISTS idx_spectrum_preprocessing_image
+    ON t_spectrum_preprocessing(image_id, created_at DESC);
+
+COMMENT ON TABLE t_spectrum_preprocessing IS '一维像素域光谱预处理结果，同一条光谱只保存最新一次结果';
+COMMENT ON COLUMN t_spectrum_preprocessing.preprocessing_steps IS '尖刺修正、平滑、背景扣除和归一化等预处理参数与执行顺序';
+COMMENT ON COLUMN t_spectrum_preprocessing.processed_points IS '预处理后的pixelIndex-intensity点列，波长nm标定仍未应用';
+
+CREATE TABLE IF NOT EXISTS t_spectrum_analysis (
+    id BIGSERIAL PRIMARY KEY,
+    spectrum_id BIGINT NOT NULL
+        REFERENCES t_spectrum_extraction(id) ON DELETE CASCADE,
+    preprocessing_id BIGINT
+        REFERENCES t_spectrum_preprocessing(id) ON DELETE SET NULL,
+    image_id BIGINT NOT NULL
+        REFERENCES t_spectral_image(id) ON DELETE CASCADE,
+    capture_id BIGINT NOT NULL
+        REFERENCES t_spectral_capture(id) ON DELETE CASCADE,
+    user_id BIGINT
+        REFERENCES t_user(id) ON DELETE SET NULL,
+
+    source VARCHAR(16) NOT NULL
+        CHECK (source IN ('EXTRACTED', 'PREPROCESSED')),
+    point_count INTEGER NOT NULL,
+    dynamic_range NUMERIC(20, 8),
+    noise_estimate NUMERIC(20, 8),
+    candidate_peak_count INTEGER NOT NULL DEFAULT 0,
+    peak_count INTEGER NOT NULL DEFAULT 0,
+    analysis_parameters JSONB NOT NULL DEFAULT '{}'::JSONB,
+    peak_results JSONB NOT NULL DEFAULT '[]'::JSONB,
+    algorithm_version VARCHAR(64) NOT NULL,
+    summary_message TEXT,
+    details JSONB NOT NULL DEFAULT '{}'::JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+DROP INDEX IF EXISTS ux_spectrum_analysis_spectrum;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_spectrum_analysis_spectrum_source
+    ON t_spectrum_analysis(spectrum_id, source);
+
+CREATE INDEX IF NOT EXISTS idx_spectrum_analysis_image
+    ON t_spectrum_analysis(image_id, created_at DESC);
+
+COMMENT ON TABLE t_spectrum_analysis IS '一维光谱像素域谱峰检测与高斯峰形拟合结果，原始与预处理来源各保存最新结果';
+COMMENT ON COLUMN t_spectrum_analysis.peak_results IS '峰中心、FWHM、面积等均为pixelIndex单位，未做nm波长标定';
+
 -- ---------------------------------------------------------------------------
 -- Dark/flat calibration sessions
 -- ---------------------------------------------------------------------------

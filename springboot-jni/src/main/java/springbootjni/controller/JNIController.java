@@ -23,6 +23,10 @@ import springbootjni.dto.jni.MultiFrameAnalysisRequest;
 import springbootjni.dto.jni.MultiFrameAnalysisResponse;
 import springbootjni.dto.jni.SpectrumExtractionRequest;
 import springbootjni.dto.jni.SpectrumExtractionResponse;
+import springbootjni.dto.jni.SpectrumAnalysisRequest;
+import springbootjni.dto.jni.SpectrumAnalysisResponse;
+import springbootjni.dto.jni.SpectrumPreprocessingRequest;
+import springbootjni.dto.jni.SpectrumPreprocessingResponse;
 import springbootjni.dto.jni.TriggerCaptureRequest;
 import springbootjni.dto.jni.TriggerCaptureResponse;
 import springbootjni.service.JNIService;
@@ -236,6 +240,82 @@ public class JNIController {
             return ApiResponse.success("Latest spectrum fetched successfully", spectrum);
         } catch (Exception e) {
             return ApiResponse.error("Failed to fetch latest spectrum: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 对当前图片已经提取的一维光谱进行预处理。
+     *
+     * <p>同一张图片只保留最新一次预处理结果；参数变化后会覆盖旧结果，避免数据库里出现同一条光谱的多份
+     * “看起来都有效”的曲线。</p>
+     */
+    @PostMapping("/images/{imageId}/spectrum/preprocess")
+    public ApiResponse<SpectrumPreprocessingResponse> preprocessSpectrum(
+            @PathVariable long imageId,
+            @RequestBody(required = false) SpectrumPreprocessingRequest request) {
+        try {
+            SpectrumPreprocessingResponse spectrum = jniService.preprocessSpectrum(
+                    StpUtil.getLoginIdAsLong(),
+                    imageId,
+                    request);
+            return ApiResponse.success("Spectrum preprocessed successfully", spectrum);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to preprocess spectrum: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 读取当前图片最近一次一维光谱预处理结果；没有预处理过时返回null。
+     */
+    @GetMapping("/images/{imageId}/spectrum/preprocessing")
+    public ApiResponse<SpectrumPreprocessingResponse> getLatestSpectrumPreprocessing(@PathVariable long imageId) {
+        try {
+            SpectrumPreprocessingResponse spectrum = jniService.getLatestSpectrumPreprocessing(
+                    StpUtil.getLoginIdAsLong(),
+                    imageId);
+            return ApiResponse.success("Latest spectrum preprocessing fetched successfully", spectrum);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch latest spectrum preprocessing: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 对已提取的一维光谱进行像素域谱峰检测和高斯峰形拟合。
+     * 返回值的峰中心、FWHM和面积均处于pixelIndex坐标，尚未进行nm波长标定。
+     */
+    @PostMapping("/images/{imageId}/spectrum/analyze")
+    public ApiResponse<SpectrumAnalysisResponse> analyzeSpectrum(
+            @PathVariable long imageId,
+            @RequestBody(required = false) SpectrumAnalysisRequest request) {
+        try {
+            SpectrumAnalysisResponse result = jniService.analyzeSpectrum(
+                    StpUtil.getLoginIdAsLong(), imageId, request);
+            return ApiResponse.success("Spectrum peak analysis completed", result);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to analyze spectrum: " + e.getMessage());
+        }
+    }
+
+    /** 读取某张图像最近一次保存的像素域谱峰分析结果。 */
+    @GetMapping("/images/{imageId}/spectrum/analysis")
+    public ApiResponse<SpectrumAnalysisResponse> getLatestSpectrumAnalysis(@PathVariable long imageId) {
+        try {
+            SpectrumAnalysisResponse result = jniService.getLatestSpectrumAnalysis(
+                    StpUtil.getLoginIdAsLong(), imageId);
+            return ApiResponse.success("Latest spectrum analysis fetched successfully", result);
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch spectrum analysis: " + e.getMessage());
+        }
+    }
+
+    /** 返回同一图像按原始/预处理来源分别保存的最新峰拟合结果，用于并排对比。 */
+    @GetMapping("/images/{imageId}/spectrum/analyses")
+    public ApiResponse<List<SpectrumAnalysisResponse>> listSpectrumAnalyses(@PathVariable long imageId) {
+        try {
+            return ApiResponse.success("Spectrum analyses fetched successfully", jniService.listSpectrumAnalyses(
+                    StpUtil.getLoginIdAsLong(), imageId));
+        } catch (Exception e) {
+            return ApiResponse.error("Failed to fetch spectrum analyses: " + e.getMessage());
         }
     }
 

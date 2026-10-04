@@ -22,6 +22,10 @@ import springbootjni.dto.jni.MultiFrameAnalysisRequest;
 import springbootjni.dto.jni.MultiFrameAnalysisResponse;
 import springbootjni.dto.jni.SpectrumExtractionRequest;
 import springbootjni.dto.jni.SpectrumExtractionResponse;
+import springbootjni.dto.jni.SpectrumAnalysisRequest;
+import springbootjni.dto.jni.SpectrumAnalysisResponse;
+import springbootjni.dto.jni.SpectrumPreprocessingRequest;
+import springbootjni.dto.jni.SpectrumPreprocessingResponse;
 import springbootjni.dto.jni.TriggerCaptureResponse;
 import springbootjni.handler.WebSocketHandler;
 import springbootjni.jni.BridgeListener;
@@ -32,6 +36,8 @@ import springbootjni.service.SpectralGeometryCorrectionService;
 import springbootjni.service.SpectralImagePersistenceService;
 import springbootjni.service.SpectralMultiFrameQualityAnalysisService;
 import springbootjni.service.SpectralSpectrumExtractionService;
+import springbootjni.service.SpectralSpectrumAnalysisService;
+import springbootjni.service.SpectralSpectrumPreprocessingService;
 
 import javax.annotation.PreDestroy;
 import java.time.Instant;
@@ -71,6 +77,8 @@ public class JNIServiceImpl implements JNIService {
     private final ObjectMapper objectMapper;
     private final SpectralImagePersistenceService persistenceService;
     private final SpectralSpectrumExtractionService spectrumExtractionService;
+    private final SpectralSpectrumPreprocessingService spectrumPreprocessingService;
+    private final SpectralSpectrumAnalysisService spectrumAnalysisService;
     private final SpectralCalibrationService calibrationService;
     private final SpectralGeometryCorrectionService geometryCorrectionService;
 
@@ -627,6 +635,37 @@ public class JNIServiceImpl implements JNIService {
     @Override
     public SpectrumExtractionResponse getLatestSpectrum(Long userId, long imageId) {
         return spectrumExtractionService.getLatest(userId, imageId);
+    }
+
+    @Override
+    public SpectrumPreprocessingResponse preprocessSpectrum(Long userId,
+                                                            long imageId,
+                                                            SpectrumPreprocessingRequest request) {
+        ensureNoPendingCaptureForHistoryMutation();
+        return spectrumPreprocessingService.preprocess(userId, imageId, request);
+    }
+
+    @Override
+    public SpectrumPreprocessingResponse getLatestSpectrumPreprocessing(Long userId, long imageId) {
+        return spectrumPreprocessingService.getLatest(userId, imageId);
+    }
+
+    @Override
+    public SpectrumAnalysisResponse analyzeSpectrum(Long userId,
+                                                    long imageId,
+                                                    SpectrumAnalysisRequest request) {
+        ensureNoPendingCaptureForHistoryMutation();
+        return spectrumAnalysisService.analyze(userId, imageId, request);
+    }
+
+    @Override
+    public SpectrumAnalysisResponse getLatestSpectrumAnalysis(Long userId, long imageId) {
+        return spectrumAnalysisService.getLatest(userId, imageId);
+    }
+
+    @Override
+    public List<SpectrumAnalysisResponse> listSpectrumAnalyses(Long userId, long imageId) {
+        return spectrumAnalysisService.listLatestBySource(userId, imageId);
     }
 
     @Override

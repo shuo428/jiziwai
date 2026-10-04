@@ -11,6 +11,8 @@ import ConfigManagementPage from "../pages/ConfigManagement";
 import GeometryCorrectionPage from "../pages/GeometryCorrection";
 import HdrCapturePage from "../pages/HdrCapture";
 import HdrDarkCapturePage from "../pages/HdrDarkCapture";
+import SpectrumPreprocessingPage from "../pages/SpectrumPreprocessing";
+import SpectrumAnalysisPage from "../pages/SpectrumAnalysis";
 import ProtectedRoute from "../components/ProtectedRoute";
 import Layout from "../components/Layout";
 
@@ -74,6 +76,22 @@ export default function AppRouter() {
                     element={
                         <ProtectedRoute>
                             <GeometryCorrectionPage />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/spectrum-preprocessing"
+                    element={
+                        <ProtectedRoute>
+                            <SpectrumPreprocessingPage />
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/spectrum-analysis"
+                    element={
+                        <ProtectedRoute>
+                            <SpectrumAnalysisPage />
                         </ProtectedRoute>
                     }
                 />
