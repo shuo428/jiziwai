@@ -21,6 +21,16 @@ type DragState = {
     range: SpectrumRange;
 };
 
+/**
+ * 可选的光谱位置标记。它只用于曲线展示，不会改变或重采样一维光谱数据。
+ * 当前谱峰分析模块传入的 pixelIndex 仍然是像素坐标，并非波长 nm。
+ */
+export type SpectrumMarker = {
+    pixelIndex: number;
+    label?: string;
+    color?: string;
+};
+
 const CHART_PADDING = {
     top: 24,
     right: 22,
@@ -143,6 +153,7 @@ const drawSpectrumCanvas = (
     spectrum: SpectrumExtractionRecord,
     range: SpectrumRange,
     hoverPoint: SpectrumPoint | null,
+    markers: SpectrumMarker[],
 ) => {
     const parent = canvas.parentElement;
     if (!parent) {
@@ -253,6 +264,45 @@ const drawSpectrumCanvas = (
         context.restore();
     }
 
+    if (markers.length > 0) {
+        context.save();
+        context.beginPath();
+        context.rect(CHART_PADDING.left, CHART_PADDING.top, plotWidth, plotHeight);
+        context.clip();
+        markers.forEach((marker) => {
+            if (!Number.isFinite(marker.pixelIndex)
+                || marker.pixelIndex < range.start
+                || marker.pixelIndex > range.end) {
+                return;
+            }
+            const nearest = findNearestPoint(visiblePoints, marker.pixelIndex);
+            if (!nearest) {
+                return;
+            }
+            const position = pointToCanvasPosition(
+                { pixelIndex: marker.pixelIndex, intensity: nearest.intensity },
+                range,
+                yRange,
+                width,
+                height,
+            );
+            const color = marker.color ?? "#fbbf24";
+            context.strokeStyle = color;
+            context.fillStyle = color;
+            context.lineWidth = 1.2;
+            context.setLineDash([4, 4]);
+            context.beginPath();
+            context.moveTo(position.x, CHART_PADDING.top);
+            context.lineTo(position.x, height - CHART_PADDING.bottom);
+            context.stroke();
+            context.setLineDash([]);
+            context.beginPath();
+            context.arc(position.x, position.y, 3.6, 0, Math.PI * 2);
+            context.fill();
+        });
+        context.restore();
+    }
+
     if (hoverPoint && hoverPoint.pixelIndex >= range.start && hoverPoint.pixelIndex <= range.end) {
         const position = pointToCanvasPosition(hoverPoint, range, yRange, width, height);
         context.save();
@@ -278,16 +328,17 @@ const SpectrumCanvas: React.FC<{
     spectrum: SpectrumExtractionRecord;
     range: SpectrumRange;
     hoverPoint?: SpectrumPoint | null;
+    markers?: SpectrumMarker[];
     className?: string;
-}> = ({ spectrum, range, hoverPoint = null, className = "h-56" }) => {
+}> = ({ spectrum, range, hoverPoint = null, markers = [], className = "h-56" }) => {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
     const redraw = useCallback(() => {
         if (!canvasRef.current) {
             return;
         }
-        drawSpectrumCanvas(canvasRef.current, spectrum, range, hoverPoint);
-    }, [hoverPoint, range, spectrum]);
+        drawSpectrumCanvas(canvasRef.current, spectrum, range, hoverPoint, markers);
+    }, [hoverPoint, markers, range, spectrum]);
 
     useEffect(() => {
         redraw();
@@ -308,7 +359,10 @@ const SpectrumCanvas: React.FC<{
     );
 };
 
-const SpectrumCurve: React.FC<{ spectrum: SpectrumExtractionRecord }> = ({ spectrum }) => {
+const SpectrumCurve: React.FC<{ spectrum: SpectrumExtractionRecord; markers?: SpectrumMarker[] }> = ({
+    spectrum,
+    markers = [],
+}) => {
     const [previewOpen, setPreviewOpen] = useState(false);
     const [viewRange, setViewRange] = useState<SpectrumRange | null>(null);
     const [dragState, setDragState] = useState<DragState | null>(null);
@@ -448,9 +502,12 @@ const SpectrumCurve: React.FC<{ spectrum: SpectrumExtractionRecord }> = ({ spect
                 title="点击放大查看一维光谱"
                 onClick={() => setPreviewOpen(true)}
             >
-                <SpectrumCanvas spectrum={spectrum} range={domain} />
+                <SpectrumCanvas spectrum={spectrum} range={domain} markers={markers} />
             </button>
-            <div className="mt-1 text-right text-xs text-slate-500">点击曲线放大查看</div>
+            <div className="mt-1 flex justify-between text-xs text-slate-500">
+                <span>{markers.length > 0 ? `已标出 ${markers.length} 个分析位置` : ""}</span>
+                <span>点击曲线放大查看</span>
+            </div>
             <Modal
                 open={previewOpen}
                 title="一维光谱放大预览"
@@ -503,6 +560,7 @@ const SpectrumCurve: React.FC<{ spectrum: SpectrumExtractionRecord }> = ({ spect
                             spectrum={spectrum}
                             range={effectiveRange}
                             hoverPoint={hover?.point ?? null}
+                            markers={markers}
                             className="h-[68vh] max-h-[680px] min-h-[420px] select-none"
                         />
                         {hover && (

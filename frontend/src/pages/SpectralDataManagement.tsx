@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Button, Card, Checkbox, Empty, InputNumber, Modal, Select, Segmented, Space, Spin, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { Activity, Clock, Database, Eye, Image as ImageIcon, RefreshCw, Trash2 } from "lucide-react";
+import { Activity, ArrowLeft, ChartNoAxesCombined, Clock, Database, Eye, Image as ImageIcon, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { jniBridgeService } from "../service/jniBridgeService";
@@ -13,8 +13,11 @@ import { useJNIStore } from "../store/jniStore";
 import type {
     CalibrationGlobalSettingsRecord,
     ImageFrameRecord,
+    SpectrumAnalysisRecord,
     SpectrumExtractionRecord,
     SpectrumExtractionRequest,
+    SpectrumPoint,
+    SpectrumPreprocessingRecord,
     SpectrumRoi,
 } from "../types/jni";
 
@@ -300,6 +303,36 @@ const sanitizeRoiDraft = (roi: Partial<SpectrumRoi>): SpectrumExtractionRequest[
         }
     });
     return Object.keys(result).length > 0 ? result : undefined;
+};
+
+/**
+ * 预处理记录只存放点列，不直接满足通用曲线组件的完整输入类型。
+ * 这里仅在前端组装展示模型，不改变数据库中的原始或预处理光谱。
+ */
+const buildSpectrumDisplayRecord = (
+    points: SpectrumPoint[],
+    source: SpectrumExtractionRecord,
+    id: number,
+    summaryMessage: string,
+): SpectrumExtractionRecord => {
+    let min = points.length > 0 ? points[0].intensity : 0;
+    let max = min;
+    let sum = 0;
+    points.forEach((point) => {
+        min = Math.min(min, point.intensity);
+        max = Math.max(max, point.intensity);
+        sum += point.intensity;
+    });
+    return {
+        ...source,
+        id,
+        points,
+        pointCount: points.length,
+        intensityMin: min,
+        intensityMax: max,
+        intensityMean: points.length > 0 ? sum / points.length : 0,
+        summaryMessage,
+    };
 };
 
 const actionColor = (severity?: string | null): string => {
@@ -668,6 +701,10 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
     const [spectrumMaxShiftPixels, setSpectrumMaxShiftPixels] = useState<number | null>(null);
     const [spectrumRoi, setSpectrumRoi] = useState<Partial<SpectrumRoi>>({});
     const [spectrumResult, setSpectrumResult] = useState<SpectrumExtractionRecord | null>(null);
+    const [preprocessingResult, setPreprocessingResult] = useState<SpectrumPreprocessingRecord | null>(null);
+    const [spectrumAnalysisResults, setSpectrumAnalysisResults] = useState<SpectrumAnalysisRecord[]>([]);
+    const [detailArtifactsLoading, setDetailArtifactsLoading] = useState(false);
+    const [detailArtifactsErrorMessage, setDetailArtifactsErrorMessage] = useState<string | null>(null);
     const [globalCalibrationSettings, setGlobalCalibrationSettings] =
         useState<CalibrationGlobalSettingsRecord | null>(null);
     const displayedHistory = historyScene === "HDR" ? hdrHistory : imageHistory;
@@ -725,6 +762,9 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
     useEffect(() => {
         setQualityViewMode(buildProcessedQualitySource(selectedFrame) ? "after" : "before");
         setSpectrumResult(null);
+        setPreprocessingResult(null);
+        setSpectrumAnalysisResults([]);
+        setDetailArtifactsErrorMessage(null);
         setSpectrumRoi({});
         setSpectrumAxis("AUTO");
         setSpectrumIntegrationMethod("MEAN");
@@ -732,18 +772,47 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
         setSpectrumMaxShiftPixels(null);
         let cancelled = false;
         if (selectedFrame) {
-            jniBridgeService
-                .getLatestSpectrum(selectedFrame.id)
-                .then((spectrum) => {
+            setDetailArtifactsLoading(true);
+            Promise.allSettled([
+                jniBridgeService.getLatestSpectrum(selectedFrame.id),
+                jniBridgeService.getLatestSpectrumPreprocessing(selectedFrame.id),
+                jniBridgeService.listSpectrumAnalyses(selectedFrame.id),
+            ])
+                .then(([spectrumResult, preprocessingResult, analysesResult]) => {
                     if (!cancelled) {
-                        setSpectrumResult(spectrum);
+                        const failedItems: string[] = [];
+                        if (spectrumResult.status === "fulfilled") {
+                            setSpectrumResult(spectrumResult.value);
+                        } else {
+                            setSpectrumResult(null);
+                            failedItems.push("一维光谱");
+                        }
+                        if (preprocessingResult.status === "fulfilled") {
+                            setPreprocessingResult(preprocessingResult.value);
+                        } else {
+                            setPreprocessingResult(null);
+                            failedItems.push("预处理结果");
+                        }
+                        if (analysesResult.status === "fulfilled") {
+                            setSpectrumAnalysisResults(analysesResult.value);
+                        } else {
+                            setSpectrumAnalysisResults([]);
+                            failedItems.push("拟合结果");
+                        }
+                        setDetailArtifactsErrorMessage(
+                            failedItems.length > 0
+                                ? `${failedItems.join("、")}暂时未能读取；其余已成功读取的数据仍会正常展示。`
+                                : null,
+                        );
                     }
                 })
-                .catch(() => {
+                .finally(() => {
                     if (!cancelled) {
-                        setSpectrumResult(null);
+                        setDetailArtifactsLoading(false);
                     }
                 });
+        } else {
+            setDetailArtifactsLoading(false);
         }
         return () => {
             cancelled = true;
@@ -773,7 +842,8 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
     };
 
     const handlePreview = (record: ImageFrameRecord) => {
-        setSelectedFrame(record);
+        // 即使返回列表后再次打开同一行，也创建新对象触发详情数据重新从后端回读。
+        setSelectedFrame({ ...record });
         setHdrPlaneZoomItem(null);
         setPreviewVisible(true);
     };
@@ -829,6 +899,9 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
             }
             const result = await jniBridgeService.extractSpectrum(record.id, request);
             setSpectrumResult(result);
+            // 新的一维光谱会替代当前图像的提取结果；已有预处理/拟合属于旧曲线，不在详情中继续展示。
+            setPreprocessingResult(null);
+            setSpectrumAnalysisResults([]);
             toast.success(result.summaryMessage || "一维光谱提取完成");
         } catch (error: any) {
             toast.error(error?.message || "一维光谱提取失败");
@@ -926,6 +999,17 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
     );
     const selectedQualityDecisionReasons = getQualityDecisionReasons(selectedActiveQualitySource);
     const selectedHdrPlanePreviewItems = buildHdrPlanePreviewItems(selectedFrame);
+    const selectedPreprocessedSpectrum = spectrumResult
+        && preprocessingResult
+        && preprocessingResult.spectrumId === spectrumResult.id
+        && preprocessingResult.points.length > 0
+        ? buildSpectrumDisplayRecord(
+            preprocessingResult.points,
+            spectrumResult,
+            preprocessingResult.id + 100000000,
+            preprocessingResult.summaryMessage || "预处理后一维光谱",
+        )
+        : null;
 
     const columns: ColumnsType<ImageFrameRecord> = [
         {
@@ -1096,6 +1180,7 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
 
     return (
         <div className="space-y-6 p-6">
+            {!previewVisible ? (
             <Card className="bg-white border border-gray-200 shadow-sm">
                 <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
                     <div className="flex items-center gap-3">
@@ -1179,49 +1264,66 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
                     />
                 )}
             </Card>
+            ) : selectedFrame ? (
+                <div className="space-y-5">
+                    <Card className="border border-slate-200 shadow-sm">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex min-w-0 items-center gap-3">
+                                <Button
+                                    icon={<ArrowLeft size={16} />}
+                                    onClick={() => {
+                                        setPreviewVisible(false);
+                                        setHdrPlaneZoomItem(null);
+                                    }}
+                                >
+                                    返回图像列表
+                                </Button>
+                                <div className="min-w-0">
+                                    <Title level={4} className="!mb-0 flex items-center gap-2 !text-slate-800">
+                                        <ImageIcon size={20} />
+                                        图像分析详情 #{selectedFrame.id}
+                                    </Title>
+                                    <Text className="block text-xs text-slate-500">
+                                        从二维图像版本、质量与校准审计，到一维光谱、预处理和拟合结果的集中视图。
+                                    </Text>
+                                </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Tag color={selectedFrame.captureScene === "HDR" ? "purple" : "blue"}>
+                                    {selectedFrame.captureScene === "HDR" ? "HDR融合图像" : "普通单帧"}
+                                </Tag>
+                                <Tag color={qualityColor(selectedSummaryQualityStatus)}>
+                                    {selectedSummaryScopeLabel}质量 {selectedSummaryQualityStatus || "NOT_EVALUATED"}
+                                </Tag>
+                                <Button
+                                    size="small"
+                                    icon={<RefreshCw size={14} />}
+                                    loading={detailArtifactsLoading}
+                                    onClick={() => setSelectedFrame((current) => current ? { ...current } : current)}
+                                >
+                                    刷新详情数据
+                                </Button>
+                                <Button
+                                    loading={processingImageId === selectedFrame.id}
+                                    disabled={
+                                        Boolean(getProcessingDisabledReason(selectedFrame)) ||
+                                        (processingImageId !== null && processingImageId !== selectedFrame.id)
+                                    }
+                                    title={getProcessingDisabledReason(selectedFrame) || "执行坏点插值或少量异常行/列校正"}
+                                    onClick={() => handleProcess(selectedFrame)}
+                                >
+                                    {getProcessingButtonLabel(selectedFrame, "处理当前图像")}
+                                </Button>
+                            </div>
+                        </div>
+                    </Card>
 
-            <Modal
-                title={
-                    <div className="flex items-center gap-2">
-                        <ImageIcon size={18} />
-                        <span>数据库图像预览</span>
-                        {selectedFrame?.captureScene === "HDR" && <Tag color="purple">HDR融合</Tag>}
-                    </div>
-                }
-                open={previewVisible}
-                onCancel={() => {
-                    setPreviewVisible(false);
-                    setHdrPlaneZoomItem(null);
-                }}
-                footer={[
-                    selectedFrame && (
-                        <Button
-                            key="process"
-                            loading={processingImageId === selectedFrame.id}
-                            disabled={
-                                Boolean(getProcessingDisabledReason(selectedFrame)) ||
-                                (processingImageId !== null && processingImageId !== selectedFrame.id)
-                            }
-                            title={getProcessingDisabledReason(selectedFrame) || "执行坏点插值或少量异常行/列校正"}
-                            onClick={() => handleProcess(selectedFrame)}
-                        >
-                            {getProcessingButtonLabel(selectedFrame, "处理当前图像")}
-                        </Button>
-                    ),
-                    <Button
-                        key="close"
-                        onClick={() => {
-                            setPreviewVisible(false);
-                            setHdrPlaneZoomItem(null);
-                        }}
-                    >
-                        关闭
-                    </Button>,
-                ]}
-                width="96vw"
-                style={{ maxWidth: 1480, top: 24 }}
-            >
-                {selectedFrame && (
+                    {detailArtifactsErrorMessage && (
+                        <div className="rounded-lg border border-orange-200 bg-orange-50 px-4 py-3 text-xs leading-5 text-orange-700">
+                            {detailArtifactsErrorMessage}
+                        </div>
+                    )}
+
                     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(520px,0.95fr)]">
                         <div className="space-y-3">
                             <ImageVersionPreview
@@ -1948,8 +2050,122 @@ const SpectralDataManagementPage: React.FC<SpectralDataManagementPageProps> = ({
                             </div>
                         </div>
                     </div>
-                )}
-            </Modal>
+
+                    <Card
+                        title={
+                            <div className="flex items-center gap-2">
+                                <ChartNoAxesCombined size={18} />
+                                <span>一维光谱与分析汇总</span>
+                            </div>
+                        }
+                        extra={detailArtifactsLoading ? <Spin size="small" /> : null}
+                        className="border border-slate-200"
+                    >
+                        <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                            <Tag color={spectrumResult ? "blue" : "default"} className="m-0">
+                                1. 提取 {spectrumResult ? "已完成" : "未完成"}
+                            </Tag>
+                            <span>→</span>
+                            <Tag color={selectedPreprocessedSpectrum ? "cyan" : "default"} className="m-0">
+                                2. 预处理 {selectedPreprocessedSpectrum ? "已完成" : "未执行"}
+                            </Tag>
+                            <span>→</span>
+                            <Tag color={spectrumAnalysisResults.length > 0 ? "purple" : "default"} className="m-0">
+                                3. 拟合分析 {spectrumAnalysisResults.length > 0 ? `已完成 ${spectrumAnalysisResults.length} 份` : "未执行"}
+                            </Tag>
+                            <Text className="ml-auto text-xs text-slate-400">
+                                曲线与拟合结果均以 pixelIndex 为横坐标，不是 nm 波长。
+                            </Text>
+                        </div>
+
+                        <div className="grid gap-4 2xl:grid-cols-3">
+                            <div className="min-w-0 rounded-xl border border-blue-100 bg-blue-50/40 p-3">
+                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <Text className="block font-medium text-slate-800">提取后一维曲线</Text>
+                                        <Text className="text-xs text-slate-500">来源：{spectrumResult ? spectrumSourceLabel(spectrumResult.sourceMode, selectedFrame) : "-"}</Text>
+                                    </div>
+                                    {spectrumResult && <Tag color="blue" className="m-0">{spectrumResult.pointCount} 点</Tag>}
+                                </div>
+                                {spectrumResult ? (
+                                    <SpectrumCurve spectrum={spectrumResult} />
+                                ) : (
+                                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未提取一维光谱" />
+                                )}
+                            </div>
+
+                            <div className="min-w-0 rounded-xl border border-cyan-100 bg-cyan-50/40 p-3">
+                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <Text className="block font-medium text-slate-800">预处理曲线</Text>
+                                        <Text className="text-xs text-slate-500">不覆盖提取后一维曲线，可与左侧直接对照</Text>
+                                    </div>
+                                    {selectedPreprocessedSpectrum && <Tag color="cyan" className="m-0">{selectedPreprocessedSpectrum.pointCount} 点</Tag>}
+                                </div>
+                                {selectedPreprocessedSpectrum ? (
+                                    <SpectrumCurve spectrum={selectedPreprocessedSpectrum} />
+                                ) : (
+                                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未执行光谱预处理" />
+                                )}
+                            </div>
+
+                            <div className="min-w-0 rounded-xl border border-purple-100 bg-purple-50/40 p-3">
+                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <Text className="block font-medium text-slate-800">峰拟合与分析</Text>
+                                        <Text className="text-xs text-slate-500">
+                                            原始一维曲线与预处理曲线可分别保存最新拟合结果，用于比较预处理前后的峰形变化。
+                                        </Text>
+                                    </div>
+                                    {spectrumAnalysisResults.length > 0 && <Tag color="purple" className="m-0">{spectrumAnalysisResults.length} 份结果</Tag>}
+                                </div>
+                                {spectrumAnalysisResults.length > 0 ? (
+                                    <div className="space-y-3">
+                                        <div className="max-h-[440px] space-y-3 overflow-y-auto pr-1">
+                                            {spectrumAnalysisResults.map((analysis) => (
+                                                <div key={analysis.id} className="rounded-lg border border-purple-100 bg-white/80 p-2.5">
+                                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <Tag color={analysis.source === "PREPROCESSED" ? "cyan" : "blue"} className="m-0">
+                                                                {analysis.source === "PREPROCESSED" ? "预处理曲线" : "提取后曲线"}
+                                                            </Tag>
+                                                            <span className="text-xs text-slate-600">{analysis.peakCount} 个拟合峰 / {analysis.candidatePeakCount} 个候选</span>
+                                                        </div>
+                                                        <span className="text-xs text-slate-500">噪声 {formatNullableNumber(analysis.noiseEstimate, 3)}</span>
+                                                    </div>
+                                                    <div className="mt-2 space-y-2 text-xs">
+                                                        {analysis.peaks.map((peak) => (
+                                                            <div key={`${analysis.id}_${peak.rank}_${peak.observedPixelIndex}`} className="rounded bg-slate-50 p-2">
+                                                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                                                    <span className="font-medium text-slate-800">峰 #{peak.rank} · {formatNullableNumber(peak.fittedCenterPixel, 3)} px</span>
+                                                                    <Tag color={peak.fitQuality === "GOOD" ? "green" : "orange"} className="m-0">
+                                                                        {peak.fitQuality === "GOOD" ? "拟合可信" : "低置信度"}
+                                                                    </Tag>
+                                                                </div>
+                                                                <div className="mt-1 grid grid-cols-3 gap-1 text-slate-500">
+                                                                    <span>FWHM {formatNullableNumber(peak.fwhmPixels, 2)}</span>
+                                                                    <span>SNR {formatNullableNumber(peak.signalToNoise, 2)}</span>
+                                                                    <span>R² {formatNullableNumber(peak.rSquared, 3)}</span>
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                        {analysis.peaks.length === 0 && (
+                                                            <Text className="block py-2 text-center text-xs text-slate-500">当前阈值下未检测到可拟合谱峰</Text>
+                                                        )}
+                                                    </div>
+                                                    <Text className="mt-2 block text-xs leading-5 text-slate-500">{analysis.summaryMessage}</Text>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未执行拟合分析" />
+                                )}
+                            </div>
+                        </div>
+                    </Card>
+                </div>
+            ) : null}
 
             <Modal
                 title={hdrPlaneZoomItem?.label ?? "HDR输入平面预览"}

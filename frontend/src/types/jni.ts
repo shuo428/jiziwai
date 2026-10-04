@@ -366,6 +366,102 @@ export interface SpectrumExtractionRecord {
     createdAt: string;
 }
 
+export interface SpectrumPreprocessingRequest {
+    spikeCorrectionEnabled?: boolean;
+    spikeWindowRadius?: number;
+    spikeThresholdMad?: number;
+    smoothingEnabled?: boolean;
+    smoothingMethod?: "MOVING_AVERAGE" | "SAVITZKY_GOLAY";
+    smoothingWindow?: number;
+    smoothingPolynomialOrder?: number;
+    baselineCorrectionEnabled?: boolean;
+    baselineMethod?: "ROLLING_PERCENTILE";
+    baselineWindow?: number;
+    baselinePercentile?: number;
+    normalizationEnabled?: boolean;
+    normalizationMethod?: "NONE" | "MAX" | "AREA" | "MIN_MAX";
+}
+
+export interface SpectrumPreprocessingRecord {
+    id: number;
+    spectrumId: number;
+    imageId: number;
+    captureId: number;
+    preprocessingSteps: Record<string, unknown> | null;
+    pointCount: number;
+    originalIntensityMin: number;
+    originalIntensityMax: number;
+    originalIntensityMean: number;
+    processedIntensityMin: number;
+    processedIntensityMax: number;
+    processedIntensityMean: number;
+    dynamicRangeBefore: number;
+    dynamicRangeAfter: number;
+    noiseBefore: number;
+    noiseAfter: number;
+    spikeCount: number;
+    originalPoints: SpectrumPoint[];
+    points: SpectrumPoint[];
+    algorithmVersion: string;
+    summaryMessage: string;
+    details: Record<string, unknown> | null;
+    createdAt: string;
+}
+
+/**
+ * 像素域谱峰分析参数。当前没有可用波长标定，因此所有位置和宽度都以 pixelIndex 表示。
+ */
+export interface SpectrumAnalysisRequest {
+    source?: "AUTO" | "EXTRACTED" | "PREPROCESSED";
+    minProminenceRatio?: number;
+    minSignalToNoise?: number;
+    minDistancePixels?: number;
+    fitWindowRadius?: number;
+    maxPeaks?: number;
+}
+
+export interface SpectrumPeakFitRecord {
+    rank: number;
+    observedPixelIndex: number;
+    fittedCenterPixel: number;
+    /** 结果来源标记；新分析固定为 POSITIVE。 */
+    polarity: string;
+    observedIntensity: number;
+    fittedPeakIntensity: number;
+    localBaseline: number;
+    amplitude: number;
+    prominence: number;
+    signalToNoise: number;
+    sigmaPixels: number;
+    fwhmPixels: number;
+    area: number;
+    rSquared: number;
+    fitWindowStart: number;
+    fitWindowEnd: number;
+    fitQuality: "GOOD" | "LOW_CONFIDENCE" | string;
+}
+
+export interface SpectrumAnalysisRecord {
+    id: number;
+    spectrumId: number;
+    preprocessingId: number | null;
+    imageId: number;
+    captureId: number;
+    source: "EXTRACTED" | "PREPROCESSED" | string;
+    sourceDescription: string;
+    pointCount: number;
+    dynamicRange: number;
+    noiseEstimate: number;
+    candidatePeakCount: number;
+    peakCount: number;
+    analysisParameters: Record<string, unknown> | null;
+    peaks: SpectrumPeakFitRecord[];
+    algorithmVersion: string;
+    summaryMessage: string;
+    details: Record<string, unknown> | null;
+    createdAt: string;
+}
+
 export interface GeometryProfileRequest {
     id?: number | null;
     profileName?: string;

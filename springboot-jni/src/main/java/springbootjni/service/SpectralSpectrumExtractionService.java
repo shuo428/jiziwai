@@ -241,6 +241,14 @@ public class SpectralSpectrumExtractionService {
                 summaryMessage,
                 toJson(details));
 
+        /*
+         * 同一图像重新提取意味着ROI、积分方式、图像版本或几何校正参数可能已经改变。
+         * 原有预处理点列和峰拟合都基于旧的一维曲线，继续保留会在详情工作台中形成
+         * “曲线已更新、分析仍来自旧曲线”的错误对比，因此在同一事务中主动失效下游结果。
+         */
+        jdbcTemplate.update("DELETE FROM t_spectrum_analysis WHERE spectrum_id=?", savedExtraction.id);
+        jdbcTemplate.update("DELETE FROM t_spectrum_preprocessing WHERE spectrum_id=?", savedExtraction.id);
+
         return buildResponse(
                 savedExtraction.id,
                 source,

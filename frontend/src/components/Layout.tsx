@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom';
 import { Layout as AntLayout, Menu, ConfigProvider, Button, Dropdown, Segmented, Tag } from 'antd';
 import type { MenuProps } from 'antd';
-import { Home, Cpu, Radio, LogOut, User, MessageSquare, ChevronLeft, ChevronRight, Database, Settings2, Layers, ScanLine } from 'lucide-react';
+import { Home, Cpu, Radio, LogOut, User, MessageSquare, ChevronLeft, ChevronRight, Database, Settings2, Layers, ScanLine, Activity, ChartNoAxesCombined } from 'lucide-react';
 import { useUserStore } from '../store/userStore';
 import { useJNIStore, type WorkMode } from '../store/jniStore';
 import { toast } from 'sonner';
@@ -64,6 +64,16 @@ const LayoutContent: React.FC = () => {
             label: <Link to="/geometry-correction">光谱几何校正</Link>,
         },
         {
+            key: '/spectrum-preprocessing',
+            icon: <Activity size={18} />,
+            label: <Link to="/spectrum-preprocessing">光谱预处理</Link>,
+        },
+        {
+            key: '/spectrum-analysis',
+            icon: <ChartNoAxesCombined size={18} />,
+            label: <Link to="/spectrum-analysis">光谱拟合与分析</Link>,
+        },
+        {
             key: '/spectral-management',
             icon: <Database size={18} />,
             label: <Link to="/spectral-management">普通图像管理</Link>,
@@ -90,6 +100,16 @@ const LayoutContent: React.FC = () => {
             key: '/geometry-correction',
             icon: <ScanLine size={18} />,
             label: <Link to="/geometry-correction">光谱几何校正</Link>,
+        },
+        {
+            key: '/spectrum-preprocessing',
+            icon: <Activity size={18} />,
+            label: <Link to="/spectrum-preprocessing">光谱预处理</Link>,
+        },
+        {
+            key: '/spectrum-analysis',
+            icon: <ChartNoAxesCombined size={18} />,
+            label: <Link to="/spectrum-analysis">光谱拟合与分析</Link>,
         },
         {
             key: '/hdr-management',
@@ -124,6 +144,8 @@ const LayoutContent: React.FC = () => {
         '/hdr-management': 'HDR图像管理',
         '/hdr-dark-capture': 'HDR暗场采集',
         '/geometry-correction': '光谱几何校正',
+        '/spectrum-preprocessing': '光谱预处理',
+        '/spectrum-analysis': '光谱拟合与分析',
         '/config-management': '配置管理',
         '/spectral-management': '普通图像管理',
         '/calibration': '普通校准与缺陷地图',
@@ -152,6 +174,8 @@ const LayoutContent: React.FC = () => {
             '/hdr-management': '/spectral-management',
             '/hdr-dark-capture': '/calibration',
             '/geometry-correction': '/geometry-correction',
+            '/spectrum-preprocessing': '/spectrum-preprocessing',
+            '/spectrum-analysis': '/spectrum-analysis',
         };
         const nextPath = counterpartMap[location.pathname] ?? location.pathname;
         if (nextPath !== location.pathname) {

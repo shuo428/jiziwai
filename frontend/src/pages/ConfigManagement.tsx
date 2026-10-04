@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { Alert, Button, Card, Input, InputNumber, Select, Tag, Tooltip, Typography } from "antd";
-import { Activity, AlertCircle, Binary, CheckCircle, Database, Info, RotateCcw, Send, Settings } from "lucide-react";
+import { Activity, AlertCircle, Binary, Database, Info, RotateCcw, Send, Settings } from "lucide-react";
 import { toast } from "sonner";
 
 import { jniBridgeService } from "../service/jniBridgeService";
 import { useJNIStore } from "../store/jniStore";
+import { describeConfigAck, describeStatusError, DEVICE_STATUS_FLAGS } from "../utils/bridgeFeedback";
 
 const { Title, Text } = Typography;
 
@@ -85,6 +86,35 @@ const ConfigManagementPage: React.FC = () => {
             const message = err?.message || "十六进制配置解析失败";
             actions.setError(message);
             toast.error(message);
+        }
+    };
+
+    const handleSendConfig = async () => {
+        setLoadingAction("config");
+        actions.setError(null);
+        try {
+            await jniBridgeService.sendFullConfigAndWait(configBytes);
+            toast.success("下位机确认配置应用成功（resultCode=0）");
+        } catch (err: any) {
+            const message = err?.message || "配置结果未知，请检查连接和板端日志";
+            actions.setError(message);
+            toast.error(message);
+        } finally {
+            // 配置应答和状态包分别展示；不能在收到 ACK 后自行拼出 CONFIG_APPLIED 状态。
+            // 即使配置失败/应答超时，也尝试读取设备实际报告的最新状态。
+            if (useJNIStore.getState().bridgeState.connected) {
+                try {
+                    const status = await jniBridgeService.queryStatusAndWait();
+                    if (status.errorCode !== 0 || status.statusBits < 0 || (status.statusBits & 4) !== 0) {
+                        toast.warning(`设备状态：${describeStatusError(status.errorCode)}；请查看状态位`);
+                    } else if ((status.statusBits & 16) === 0) {
+                        toast.warning("最新状态未置位 CONFIG_APPLIED，当前不能确认配置已应用");
+                    }
+                } catch (err: any) {
+                    toast.warning(`未取得新的设备状态：${err?.message || "查询失败"}；请手动查询状态`);
+                }
+            }
+            setLoadingAction(null);
         }
     };
 
@@ -422,25 +452,43 @@ const ConfigManagementPage: React.FC = () => {
 
                     <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(260px,0.8fr)_minmax(220px,0.6fr)]">
                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                            <Text className="mb-2 block text-sm text-slate-500">状态位</Text>
+                            <Text className="mb-2 block text-sm text-slate-500">最近收到的设备状态（非实时轮询）</Text>
                             <div className="max-h-24 overflow-auto break-all rounded bg-white p-3 font-mono text-xs leading-relaxed text-slate-800">
                                 {latestStatus?.statusBinary || "暂无状态数据"}
                             </div>
                             {latestStatus && (
-                                <div className="mt-2 text-xs text-slate-500">
-                                    statusBits={latestStatus.statusBits} · errorCode={latestStatus.errorCode}
+                                <div className="mt-2 space-y-2 text-xs text-slate-500">
+                                    <div>statusBits={latestStatus.statusBits} · errorCode={latestStatus.errorCode}</div>
+                                    <div className="flex flex-wrap gap-1">
+                                        {DEVICE_STATUS_FLAGS.map(({ mask, label }) => (
+                                            <Tag key={mask} color={latestStatus.statusBits >= 0 && (latestStatus.statusBits & mask) !== 0
+                                                ? (mask === 4 ? "red" : "blue") : "default"}>
+                                                {label}={latestStatus.statusBits < 0 ? "未知" : ((latestStatus.statusBits & mask) !== 0 ? "1" : "0")}
+                                            </Tag>
+                                        ))}
+                                    </div>
+                                    <div className={latestStatus.errorCode !== 0 || (latestStatus.statusBits >= 0 && (latestStatus.statusBits & 4) !== 0)
+                                        ? "text-red-600" : "text-slate-600"}>
+                                        {describeStatusError(latestStatus.errorCode)}
+                                    </div>
+                                    <div>接收时间：{latestStatus.timestamp}</div>
+                                    <div>READY 只表示空闲，不代表 CMOS 已配置或已具备出图条件。</div>
                                 </div>
                             )}
                         </div>
 
                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                            <Text className="mb-2 block text-sm text-slate-500">配置应答</Text>
+                            <Text className="mb-2 block text-sm text-slate-500">最近收到的配置应答</Text>
                             {latestConfigAck ? (
-                                <div className="font-mono text-sm text-slate-800">
-                                    resultCode={latestConfigAck.resultCode} · failedAddr={latestConfigAck.failedAddr}
+                                <div className="space-y-2 break-words text-sm text-slate-800">
+                                    <Tag color={latestConfigAck.resultCode === 0 ? "green" : "red"}>
+                                        {latestConfigAck.resultCode === 0 ? "本次配置成功" : "本次配置未成功"}
+                                    </Tag>
+                                    <div className="font-mono text-xs">resultCode={latestConfigAck.resultCode} · failedAddr={latestConfigAck.failedAddr}</div>
+                                    <div className="text-xs text-slate-500">接收时间：{latestConfigAck.timestamp}</div>
                                 </div>
                             ) : (
-                                <Text className="text-slate-500">暂无配置应答</Text>
+                                <Text className="text-slate-500">{loadingAction === "config" ? "尚未收到本次配置应答，结果待确认" : "暂无有效配置应答，不能据此判断配置成功"}</Text>
                             )}
                         </div>
 
@@ -470,11 +518,7 @@ const ConfigManagementPage: React.FC = () => {
                             icon={<Send size={16} />}
                             loading={loadingAction === "config"}
                             disabled={!connected || loadingAction !== null}
-                            onClick={() => void runAction(
-                                "config",
-                                () => jniBridgeService.sendFullConfigAndWait(configBytes),
-                                "完整配置已下发",
-                            )}
+                            onClick={() => void handleSendConfig()}
                         >
                             发送 512 字节
                         </Button>
@@ -533,14 +577,13 @@ const ConfigManagementPage: React.FC = () => {
                     </div>
                 </div>
 
-                {latestConfigAck?.resultCode === 0 && (
+                {latestConfigAck && (
                     <Alert
                         className="mt-4 rounded-md"
-                        type="success"
+                        type={latestConfigAck.resultCode === 0 ? "success" : "error"}
                         showIcon
-                        icon={<CheckCircle size={16} />}
-                        message="配置已确认"
-                        description={`failedAddr=${latestConfigAck.failedAddr}`}
+                        message={describeConfigAck(latestConfigAck)}
+                        description="这是最近一次配置应答，不是持续实时状态；当前设备状态请查看上方状态包。配置应答码与状态错误码含义不同。"
                     />
                 )}
             </Card>

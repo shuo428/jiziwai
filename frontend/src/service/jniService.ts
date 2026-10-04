@@ -20,6 +20,10 @@ import type {
     MultiFrameAnalysisRequest,
     SpectrumExtractionRecord,
     SpectrumExtractionRequest,
+    SpectrumAnalysisRecord,
+    SpectrumAnalysisRequest,
+    SpectrumPreprocessingRecord,
+    SpectrumPreprocessingRequest,
     TriggerCaptureOptions,
     TriggerCaptureResponse,
 } from "../types/jni";
@@ -57,6 +61,28 @@ export const jniApi = {
         apiClient.get<unknown, SpectrumExtractionRecord | null>(`/jni/images/${imageId}/spectrum`),
     extractSpectrum: (imageId: number, payload?: SpectrumExtractionRequest) =>
         apiClient.post<unknown, SpectrumExtractionRecord>(`/jni/images/${imageId}/spectrum/extract`, payload ?? {}),
+    preprocessSpectrum: (imageId: number, payload?: SpectrumPreprocessingRequest) =>
+        apiClient.post<unknown, SpectrumPreprocessingRecord>(
+            `/jni/images/${imageId}/spectrum/preprocess`,
+            payload ?? {},
+        ),
+    getLatestSpectrumPreprocessing: (imageId: number) =>
+        apiClient.get<unknown, SpectrumPreprocessingRecord | null>(
+            `/jni/images/${imageId}/spectrum/preprocessing`,
+        ),
+    analyzeSpectrum: (imageId: number, payload?: SpectrumAnalysisRequest) =>
+        apiClient.post<unknown, SpectrumAnalysisRecord>(
+            `/jni/images/${imageId}/spectrum/analyze`,
+            payload ?? {},
+        ),
+    getLatestSpectrumAnalysis: (imageId: number) =>
+        apiClient.get<unknown, SpectrumAnalysisRecord | null>(
+            `/jni/images/${imageId}/spectrum/analysis`,
+        ),
+    listSpectrumAnalyses: (imageId: number) =>
+        apiClient.get<unknown, SpectrumAnalysisRecord[]>(
+            `/jni/images/${imageId}/spectrum/analyses`,
+        ),
     listGeometryProfiles: (modeType?: "NORMAL" | "HDR") =>
         apiClient.get<unknown, GeometryProfileRecord[]>(
             "/jni/geometry/profiles",

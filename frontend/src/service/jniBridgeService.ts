@@ -1,5 +1,6 @@
 import { jniApi } from "./jniService";
 import { useJNIStore } from "../store/jniStore";
+import { describeConfigAck, readWireUint16 } from "../utils/bridgeFeedback";
 import type {
     CalibrationRequest,
     CalibrationGlobalSettingsRecord,
@@ -25,6 +26,11 @@ import type {
     QualityRecommendedAction,
     SpectrumExtractionRecord,
     SpectrumExtractionRequest,
+    SpectrumAnalysisRecord,
+    SpectrumAnalysisRequest,
+    SpectrumPeakFitRecord,
+    SpectrumPreprocessingRecord,
+    SpectrumPreprocessingRequest,
     SpectrumPoint,
     SpectrumRoi,
     StatusRecord,
@@ -461,6 +467,79 @@ const normalizeSpectrumExtraction = (payload: any): SpectrumExtractionRecord => 
     createdAt: typeof payload?.createdAt === "string" ? payload.createdAt : new Date().toISOString(),
 });
 
+const normalizeSpectrumPreprocessing = (payload: any): SpectrumPreprocessingRecord => ({
+    id: Number(payload?.id ?? 0),
+    spectrumId: Number(payload?.spectrumId ?? 0),
+    imageId: Number(payload?.imageId ?? 0),
+    captureId: Number(payload?.captureId ?? 0),
+    preprocessingSteps:
+        payload?.preprocessingSteps && typeof payload.preprocessingSteps === "object"
+            ? payload.preprocessingSteps
+            : null,
+    pointCount: Number(payload?.pointCount ?? 0),
+    originalIntensityMin: Number(payload?.originalIntensityMin ?? 0),
+    originalIntensityMax: Number(payload?.originalIntensityMax ?? 0),
+    originalIntensityMean: Number(payload?.originalIntensityMean ?? 0),
+    processedIntensityMin: Number(payload?.processedIntensityMin ?? 0),
+    processedIntensityMax: Number(payload?.processedIntensityMax ?? 0),
+    processedIntensityMean: Number(payload?.processedIntensityMean ?? 0),
+    dynamicRangeBefore: Number(payload?.dynamicRangeBefore ?? 0),
+    dynamicRangeAfter: Number(payload?.dynamicRangeAfter ?? 0),
+    noiseBefore: Number(payload?.noiseBefore ?? 0),
+    noiseAfter: Number(payload?.noiseAfter ?? 0),
+    spikeCount: Number(payload?.spikeCount ?? 0),
+    originalPoints: normalizeSpectrumPoints(payload?.originalPoints),
+    points: normalizeSpectrumPoints(payload?.points),
+    algorithmVersion: typeof payload?.algorithmVersion === "string" ? payload.algorithmVersion : "",
+    summaryMessage: typeof payload?.summaryMessage === "string" ? payload.summaryMessage : "",
+    details: payload?.details && typeof payload.details === "object" ? payload.details : null,
+    createdAt: typeof payload?.createdAt === "string" ? payload.createdAt : new Date().toISOString(),
+});
+
+const normalizeSpectrumPeakFit = (payload: any): SpectrumPeakFitRecord => ({
+    rank: Number(payload?.rank ?? 0),
+    observedPixelIndex: Number(payload?.observedPixelIndex ?? 0),
+    fittedCenterPixel: Number(payload?.fittedCenterPixel ?? 0),
+    polarity: typeof payload?.polarity === "string" ? payload.polarity : "POSITIVE",
+    observedIntensity: Number(payload?.observedIntensity ?? 0),
+    fittedPeakIntensity: Number(payload?.fittedPeakIntensity ?? 0),
+    localBaseline: Number(payload?.localBaseline ?? 0),
+    amplitude: Number(payload?.amplitude ?? 0),
+    prominence: Number(payload?.prominence ?? 0),
+    signalToNoise: Number(payload?.signalToNoise ?? 0),
+    sigmaPixels: Number(payload?.sigmaPixels ?? 0),
+    fwhmPixels: Number(payload?.fwhmPixels ?? 0),
+    area: Number(payload?.area ?? 0),
+    rSquared: Number(payload?.rSquared ?? 0),
+    fitWindowStart: Number(payload?.fitWindowStart ?? 0),
+    fitWindowEnd: Number(payload?.fitWindowEnd ?? 0),
+    fitQuality: typeof payload?.fitQuality === "string" ? payload.fitQuality : "LOW_CONFIDENCE",
+});
+
+const normalizeSpectrumAnalysis = (payload: any): SpectrumAnalysisRecord => ({
+    id: Number(payload?.id ?? 0),
+    spectrumId: Number(payload?.spectrumId ?? 0),
+    preprocessingId: typeof payload?.preprocessingId === "number" ? payload.preprocessingId : null,
+    imageId: Number(payload?.imageId ?? 0),
+    captureId: Number(payload?.captureId ?? 0),
+    source: typeof payload?.source === "string" ? payload.source : "EXTRACTED",
+    sourceDescription: typeof payload?.sourceDescription === "string" ? payload.sourceDescription : "",
+    pointCount: Number(payload?.pointCount ?? 0),
+    dynamicRange: Number(payload?.dynamicRange ?? 0),
+    noiseEstimate: Number(payload?.noiseEstimate ?? 0),
+    candidatePeakCount: Number(payload?.candidatePeakCount ?? 0),
+    peakCount: Number(payload?.peakCount ?? 0),
+    analysisParameters:
+        payload?.analysisParameters && typeof payload.analysisParameters === "object"
+            ? payload.analysisParameters
+            : null,
+    peaks: Array.isArray(payload?.peaks) ? payload.peaks.map(normalizeSpectrumPeakFit) : [],
+    algorithmVersion: typeof payload?.algorithmVersion === "string" ? payload.algorithmVersion : "",
+    summaryMessage: typeof payload?.summaryMessage === "string" ? payload.summaryMessage : "",
+    details: payload?.details && typeof payload.details === "object" ? payload.details : null,
+    createdAt: typeof payload?.createdAt === "string" ? payload.createdAt : new Date().toISOString(),
+});
+
 const normalizeGeometryProfile = (payload: any): GeometryProfileRecord => ({
     id: Number(payload?.id ?? 0),
     profileName: typeof payload?.profileName === "string" ? payload.profileName : "几何校正配置",
@@ -544,9 +623,9 @@ const handleStatus = (timestamp: string, payload: any): void => {
     const status: StatusRecord = {
         id: buildId("status"),
         timestamp,
-        statusBits: Number(payload?.statusBits ?? 0),
+        statusBits: readWireUint16(payload?.statusBits),
         statusBinary: typeof payload?.statusBinary === "string" ? payload.statusBinary : "",
-        errorCode: Number(payload?.errorCode ?? 0),
+        errorCode: readWireUint16(payload?.errorCode),
     };
 
     useJNIStore.getState().actions.pushStatus(status);
@@ -561,14 +640,22 @@ const handleConfigAck = (timestamp: string, payload: any): void => {
     const ack: ConfigAckRecord = {
         id: buildId("config_ack"),
         timestamp,
-        resultCode: Number(payload?.resultCode ?? -1),
-        failedAddr: Number(payload?.failedAddr ?? -1),
+        resultCode: readWireUint16(payload?.resultCode),
+        failedAddr: readWireUint16(payload?.failedAddr),
     };
 
     useJNIStore.getState().actions.pushConfigAck(ack);
+    // 收到应答只表示通信完成，只有结果码 0 才表示下位机成功应用配置。
+    if (ack.resultCode !== 0) {
+        useJNIStore.getState().actions.setError(describeConfigAck(ack));
+    }
     if (pendingConfigAck) {
         clearPendingRequest(pendingConfigAck);
-        pendingConfigAck.resolve(ack);
+        if (ack.resultCode === 0) {
+            pendingConfigAck.resolve(ack);
+        } else {
+            pendingConfigAck.reject(new Error(describeConfigAck(ack)));
+        }
         pendingConfigAck = null;
     }
 };
@@ -584,6 +671,11 @@ const handleTransportError = (timestamp: string, payload: any): void => {
     const store = useJNIStore.getState();
     store.actions.pushTransportError(transportError);
     store.actions.setError(transportError.message);
+    if (transportError.channel === "control") {
+        store.actions.clearDeviceFeedback();
+        pendingConfigAck = rejectPendingRequest(pendingConfigAck, `控制通道异常，配置结果无法确认：${transportError.message}`);
+        pendingStatus = rejectPendingRequest(pendingStatus, `控制通道异常：${transportError.message}`);
+    }
 };
 
 const handleEvent = (rawMessage: string): void => {
@@ -797,6 +889,36 @@ const getLatestSpectrum = async (imageId: number): Promise<SpectrumExtractionRec
     return spectrum ? normalizeSpectrumExtraction(spectrum) : null;
 };
 
+const preprocessSpectrum = async (
+    imageId: number,
+    request: SpectrumPreprocessingRequest = {},
+): Promise<SpectrumPreprocessingRecord> => {
+    const spectrum = await jniApi.preprocessSpectrum(imageId, request);
+    return normalizeSpectrumPreprocessing(spectrum);
+};
+
+const getLatestSpectrumPreprocessing = async (
+    imageId: number,
+): Promise<SpectrumPreprocessingRecord | null> => {
+    const spectrum = await jniApi.getLatestSpectrumPreprocessing(imageId);
+    return spectrum ? normalizeSpectrumPreprocessing(spectrum) : null;
+};
+
+const analyzeSpectrum = async (
+    imageId: number,
+    request: SpectrumAnalysisRequest = {},
+): Promise<SpectrumAnalysisRecord> => normalizeSpectrumAnalysis(await jniApi.analyzeSpectrum(imageId, request));
+
+const getLatestSpectrumAnalysis = async (imageId: number): Promise<SpectrumAnalysisRecord | null> => {
+    const analysis = await jniApi.getLatestSpectrumAnalysis(imageId);
+    return analysis ? normalizeSpectrumAnalysis(analysis) : null;
+};
+
+const listSpectrumAnalyses = async (imageId: number): Promise<SpectrumAnalysisRecord[]> => {
+    const analyses = await jniApi.listSpectrumAnalyses(imageId);
+    return Array.isArray(analyses) ? analyses.map(normalizeSpectrumAnalysis) : [];
+};
+
 const listGeometryProfiles = async (modeType?: "NORMAL" | "HDR"): Promise<GeometryProfileRecord[]> => {
     const profiles = await jniApi.listGeometryProfiles(modeType);
     return profiles.map(normalizeGeometryProfile);
@@ -946,6 +1068,7 @@ const disconnect = async (): Promise<BridgeConnectionState> => {
 const sendReset = async (): Promise<void> => {
     ensureConnected();
     await ensureWebSocket();
+    useJNIStore.getState().actions.clearDeviceFeedback();
     await jniApi.sendReset();
 };
 
@@ -992,6 +1115,7 @@ const queryStatusAndWait = async (timeoutMs = 10000): Promise<StatusRecord> => {
         timeoutMs,
         "等待状态回调超时",
     );
+    void waitForStatus.catch(() => undefined);
 
     try {
         await jniApi.sendQueryStatus();
@@ -1000,7 +1124,7 @@ const queryStatusAndWait = async (timeoutMs = 10000): Promise<StatusRecord> => {
             pendingStatus,
             error instanceof Error ? error.message : "发送状态查询命令失败",
         );
-        throw error;
+        return waitForStatus;
     }
 
     return waitForStatus;
@@ -1013,6 +1137,15 @@ const sendFullConfigAndWait = async (configBytes: number[], timeoutMs = 10000): 
     if (configBytes.length !== 512) {
         throw new Error("完整配置必须包含 512 个字节");
     }
+    if (configBytes.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+        throw new Error("每个配置字节必须是 0～255 的整数");
+    }
+    if (pendingConfigAck) {
+        throw new Error("已有配置命令正在等待下位机应答");
+    }
+    // 本次应答到达前，旧应答和旧状态不能作为本次配置的证明。
+    useJNIStore.getState().actions.clearDeviceFeedback();
+    useJNIStore.getState().actions.setError(null);
 
     const waitForAck = createPendingRequest(
         pendingConfigAck,
@@ -1020,8 +1153,10 @@ const sendFullConfigAndWait = async (configBytes: number[], timeoutMs = 10000): 
             pendingConfigAck = value;
         },
         timeoutMs,
-        "等待配置应答超时",
+        "等待配置应答超时，无法确认配置是否已应用；请查询状态并检查板端日志",
     );
+    // WebSocket 应答可能早于 HTTP 返回；提前挂接拒绝处理，避免未处理的 Promise 拒绝。
+    void waitForAck.catch(() => undefined);
 
     try {
         await jniApi.sendFullConfig(configBytes);
@@ -1030,7 +1165,7 @@ const sendFullConfigAndWait = async (configBytes: number[], timeoutMs = 10000): 
             pendingConfigAck,
             error instanceof Error ? error.message : "发送完整配置失败",
         );
-        throw error;
+        return waitForAck;
     }
 
     return waitForAck;
@@ -1053,6 +1188,11 @@ export const jniBridgeService = {
     getFpgaPayloadPixels,
     extractSpectrum,
     getLatestSpectrum,
+    preprocessSpectrum,
+    getLatestSpectrumPreprocessing,
+    analyzeSpectrum,
+    getLatestSpectrumAnalysis,
+    listSpectrumAnalyses,
     listGeometryProfiles,
     getEnabledGeometryProfile,
     saveGeometryProfile,
